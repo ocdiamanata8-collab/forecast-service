@@ -67,10 +67,16 @@ USER app
 
 EXPOSE 8000
 
-# Healthcheck memakai endpoint tanpa API key (kontrak §5.6).
+# PORT harus mengikuti environment — Render meng-inject PORT=10000 pada
+# Docker runtime; hardcode --port 8000 akan membuat healthcheck Render selalu
+# gagal. ${PORT:-8000} mempertahankan 8000 untuk docker run lokal.
+#
+# HEALTHCHECK memakai endpoint tanpa API key (kontrak §5.6) dan PORT yang sama.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request,sys; \
-        r=urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4); \
+    CMD python -c "import os,urllib.request,sys; \
+        port=os.environ.get('PORT','8000'); \
+        r=urllib.request.urlopen(f'http://127.0.0.1:{port}/api/v1/health', timeout=4); \
         sys.exit(0 if r.status==200 else 1)"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Shell form (bukan JSON array) agar $PORT ter-ekspansi saat runtime.
+CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
