@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "model_artifact": "model.pkl",
+  "target": "irradiance",
+  "resolution": "daily",
+  "timezone": "Asia/Makassar",
+  "columns": [
+    "irradiance",
+    "temperature",
+    "tcc"
+  ],
+  "exog_columns": [
+    "temperature",
+    "tcc"
+  ],
+  "feature_names": [
+    "temperature",
+    "tcc"
+  ],
+  "dtypes": {
+    "irradiance": "float64",
+    "temperature": "float64",
+    "tcc": "float64"
+  },
+  "scaling": {
+    "method": null,
+    "params": {}
+  },
+  "history_min_rows": 30,
+  "horizon_max": 30,
+  "order": [
+    1,
+    0,
+    2
+  ],
+  "training_rows": 1096,
+  "training_range": {
+    "from": "2023-01-01T00:00:00+08:00",
+    "to": "2025-12-31T00:00:00+08:00"
+  }
+}

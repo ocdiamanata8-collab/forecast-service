@@ -1,0 +1,28 @@
+# Forecasting Service PLTS Kupang — runtime dependencies
+#
+# Lock baseline diminta (kompatibilitas laptop/server):
+#   fastapi==0.115.0, uvicorn==0.30.6, pydantic==2.9.2,
+#   pandas==2.2.3, numpy==2.1.1.
+#
+# statsmodels ditambahkan karena app/engine.py menjalankan ARIMA langsung.
+# Pin ini stabil dengan baseline NumPy 2.1.1 / pandas 2.2.3; diperlukan
+# agar model yang sama menghasilkan prediksi yang sama pada laptop dan server.
+# scipy ikut dipin: statsmodels 0.14.4 memakai argumen `disp` yang dihapus
+# dari scipy 1.17; scipy 1.14.1 kompatibel dan diuji di Python 3.13.
+#
+# Catatan: scikit-learn/joblib/python-dotenv tidak ditambahkan karena tidak
+# digunakan oleh kode service saat ini. Tambahkan dan pin bila kode mulai
+# mengimpornya — jangan membayar biaya instalasi/risiko supply chain tanpa guna.
+#
+# httpx dipakai scripts/validate_e2e.py (validasi end-to-end terhadap server
+# live) dan oleh fastapi.testclient. Dipin agar validasi e2e berjalan sama
+# di laptop dan CI.
+
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pandas==2.2.3
+numpy==2.1.1
+statsmodels==0.14.4
+scipy==1.14.1
+httpx==0.28.1

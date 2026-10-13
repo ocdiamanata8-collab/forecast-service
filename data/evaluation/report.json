@@ -1,0 +1,73 @@
+{
+  "generated_at": "2026-10-12T11:40:29+08:00",
+  "source_csv": "C:\\Users\\ocdirads\\Downloads\\Forecasting PLTS\\Data-20261001T082404Z-1-001\\Data\\Processed\\B1_daily_master_2016_2026.csv",
+  "n_rows": 1096,
+  "n_origins": 336,
+  "holdout": 365,
+  "holdout_start": "2025-01-01T00:00:00+08:00",
+  "holdout_end": "2025-12-31T00:00:00+08:00",
+  "order": [
+    1,
+    0,
+    2
+  ],
+  "thresholds": {
+    "max_mae": 40.0,
+    "max_mape": 10.0,
+    "max_mape_long": 15.0,
+    "min_skill": 0.0,
+    "primary_horizon": 7
+  },
+  "status": "NO_GO",
+  "failures": [
+    "MAE horizon 7 = 40.255 > 40.000",
+    "MAPE horizon 7 = 25.56% > 10.00%",
+    "MAPE horizon 30 = 24.39% > 15.00%"
+  ],
+  "blocks": [
+    {
+      "horizon": 1,
+      "mae": 40.51280418564367,
+      "rmse": 50.400104359940975,
+      "mape": 25.691456879058244,
+      "n": 336,
+      "baseline_mae": 57.130745701058196,
+      "baseline_mape": 34.18150365460518,
+      "skill": 0.29087562767637265,
+      "skill_seasonal": 0.23780412785565297
+    },
+    {
+      "horizon": 7,
+      "mae": 40.25533762245811,
+      "rmse": 50.02192393751863,
+      "mape": 25.56133376779746,
+      "n": 336,
+      "baseline_mae": 53.22155051256614,
+      "baseline_mape": 31.374188853058566,
+      "skill": 0.2436271165577294,
+      "skill_seasonal": 0.2436271165577294
+    },
+    {
+      "horizon": 14,
+      "mae": 40.56133124256136,
+      "rmse": 50.20851598619357,
+      "mape": 25.690811218044153,
+      "n": 336,
+      "baseline_mae": 56.62594039351852,
+      "baseline_mape": 34.64346023845192,
+      "skill": 0.2836969953932268,
+      "skill_seasonal": NaN
+    },
+    {
+      "horizon": 30,
+      "mae": 39.75040232282929,
+      "rmse": 48.9544410541086,
+      "mape": 24.394724755595742,
+      "n": 336,
+      "baseline_mae": 51.93116526124339,
+      "baseline_mape": 30.409863694961555,
+      "skill": 0.23455593336174752,
+      "skill_seasonal": NaN
+    }
+  ]
+}

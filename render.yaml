@@ -1,0 +1,38 @@
+# Render — Blueprint untuk forecast-service (free tier PoC).
+# https://render.com/docs/render-blueprint-spec
+#
+# Build command & start command di bawah disesuaikan dengan requirements.txt
+# yang terkunci (Python 3.13 + statsmodels 0.14.4 + scipy 1.14.1) — jangan
+# diturunkan ke 3.12 tanpa menguji ulang suite, termasuk golden test.
+#
+# Yang perlu disadari sebelum dipakai monitoring operasional:
+#   - Instance FREE tidur setelah ±15 menit tanpa traffic (cold start ±30-60 detik).
+#   - 512 MB RAM — muat untuk PoC; backtest berat mungkin perlu paid instance.
+#   - Tidak ada persistensi storage — forecast/latest disimpan in-memory,
+#     hilang saat restart. Untuk data historis, panggil /forecast/actual.
+#
+# Set API_KEYS di Environment Variables sebelum pertama kali deploy —
+# tanpa itu endpoint ber-key membalas 401 (by design, lihat app/main.py).
+services:
+  - type: web
+    name: forecast-svc
+    runtime: python
+    # Versi Python HARUS sama dengan yang dipakai untuk mengunci requirements
+    # dan menjalankan seluruh suite. Python 3.13 dipakai di laptop.
+    pythonVersion: "3.13"
+    # Build command — requirements.txt adalah satu-satunya sumber dependency.
+    buildCommand: pip install -r requirements.txt
+    # Start command — PORT diinjeksi Render; uvicorn tidak membaca $PORT
+    # sendiri, jadi harus dieksplisit seperti ini.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: API_KEYS
+        # WAJIB diisi dari dashboard Render atau via env var — tanpa ini
+        # endpoint ber-key membalas 401.
+        sync: false
+      - key: SITE_IDS
+        value: PLTS_KUPANG
+      - key: PYTHON_VERSION
+        value: "3.13"
+    autoDeploy: true

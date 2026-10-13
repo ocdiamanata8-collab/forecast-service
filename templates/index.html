@@ -1,0 +1,1484 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Engineer Console — Forecasting Service PLTS Kupang</title>
+<style>
+  :root {
+    --bg:#0f172a; --panel:#1e293b; --panel2:#273449; --line:#334155;
+    --txt:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8;
+    --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --skip:#64748b;
+    /* Palet grafik — slot 1/2 dark palette, tervalidasi terhadap surface
+       #1e293b (CVD ΔE 26.8, normal ΔE 31.8, kontras ≥3:1 — ALL CHECKS PASS).
+       Warna mengikuti entitas (actual/forecast), tidak pernah dirotasi. */
+    --series-actual:#3987e5;   /* blue  — data aktual (pengamatan) */
+    --series-forecast:#d95926; /* orange — prediksi model */
+    --error-band:#94a3b8;      /* netral — selisih |aktual−forecast| */
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+         background:var(--bg); color:var(--txt); }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center;
+           padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; color:var(--accent); }
+  header .sub { color:var(--muted); font-size:12px; }
+  nav a { color:var(--muted); margin-left:14px; text-decoration:none; font-size:12px; }
+  nav a:hover { color:var(--accent); }
+  main { max-width:1120px; margin:0 auto; padding:20px; }
+  .banner { background:#1e3a5f; border:1px solid var(--accent); border-radius:8px;
+            padding:12px 16px; margin-bottom:16px; font-size:13px; color:#bae6fd; }
+  .banner b { color:#fff; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+            padding:16px; margin-bottom:16px; }
+  section h2 { font-size:13px; margin:0 0 10px; color:var(--accent);
+               text-transform:uppercase; letter-spacing:.06em; }
+  section h2 .hint { color:var(--muted); text-transform:none; letter-spacing:0; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+  .row label { color:var(--muted); font-size:12px; }
+  select, input[type=password], input[type=text], input[type=number] {
+    background:var(--panel2); border:1px solid var(--line); color:var(--txt);
+    padding:7px 9px; border-radius:6px; font:inherit; }
+  input[type=password], input[type=text].wide { min-width:320px; }
+  input[type=number] { width:90px; }
+  button { background:var(--accent); color:#052e16; border:0; padding:8px 14px;
+           border-radius:6px; font:inherit; font-weight:700; cursor:pointer; }
+  button.ghost { background:var(--panel2); color:var(--txt); border:1px solid var(--line); font-weight:400; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:12px;
+          background:var(--panel2); border:1px solid var(--line); }
+  .pill.ok { border-color:var(--ok); color:var(--ok); }
+  .pill.bad { border-color:var(--bad); color:var(--bad); }
+  .pill.warn { border-color:var(--warn); color:var(--warn); }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+  /* ---- Ringkasan KPI (panel atas, terisi otomatis) ---- */
+  .kpi-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+              gap:10px; margin-top:4px; }
+  .kpi { background:var(--panel2); border:1px solid var(--line); border-radius:8px;
+         padding:10px 12px; }
+  .kpi b { display:block; color:var(--muted); font-weight:400; font-size:11px;
+           text-transform:uppercase; letter-spacing:.05em; }
+  .kpi span { display:block; font-size:20px; font-weight:700; color:var(--txt);
+              font-variant-numeric:tabular-nums; margin-top:3px; }
+  .kpi small { display:block; color:var(--muted); font-size:10px; margin-top:2px; }
+  .kpi.ok span { color:var(--ok); }
+  .kpi.bad span { color:var(--bad); }
+  .kpi.warn span { color:var(--warn); }
+  /* ---- Grid status endpoint + tombol uji ---- */
+  .endpoint-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+                   gap:8px; margin-top:10px; }
+  .endpoint-row { display:flex; align-items:center; gap:8px; background:var(--panel2);
+                  border:1px solid var(--line); border-radius:6px; padding:7px 10px; }
+  .endpoint-row code { font-size:12px; color:var(--txt); flex:1 1 auto;
+                       overflow-wrap:anywhere; }
+  .endpoint-row .ep-method { color:var(--accent); font-weight:700; font-size:11px;
+                             min-width:34px; }
+  .ep-status { font-size:11px; min-width:74px; text-align:right;
+               font-variant-numeric:tabular-nums; color:var(--muted); }
+  .ep-status.ok { color:var(--ok); font-weight:700; }
+  .ep-status.warn { color:var(--warn); font-weight:700; }
+  .ep-status.bad { color:var(--bad); font-weight:700; }
+  .ep-test { font-size:11px; padding:4px 9px; }
+  .ep-copy { font-size:11px; padding:4px 9px; }
+  .ep-copy:disabled { opacity:.4; cursor:not-allowed; }
+  /* ---- Pane pilihan manual (mitra tombol Salin JSON) ---- */
+  .copy-viewer { margin-top:10px; background:var(--panel2);
+                 border:1px solid var(--accent); border-radius:8px; padding:10px; }
+  .copy-viewer textarea { width:100%; min-height:170px; margin-top:6px;
+                          background:#0b1220; border:1px solid var(--line);
+                          color:#cbd5e1; font:12px/1.5 ui-monospace,monospace;
+                          border-radius:6px; padding:8px; resize:vertical;
+                          white-space:pre; overflow:auto; }
+  .chip { background:var(--panel2); border:1px solid var(--line); border-radius:6px;
+          padding:5px 9px; font-size:12px; }
+  .chip b { color:var(--muted); font-weight:400; display:block; font-size:11px; }
+  table { width:100%; border-collapse:collapse; margin-top:10px; font-size:13px; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--muted); font-weight:400; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; }
+  .rawgrid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:8px; }
+  .rawhead { color:var(--muted); font-size:11px; margin:0 0 4px; }
+  pre.raw { background:#0b1220; border:1px solid var(--line); border-radius:6px;
+            padding:10px; margin:0; min-height:90px; max-height:360px; overflow:auto;
+            white-space:pre-wrap; overflow-wrap:anywhere; color:#cbd5e1; font-size:11px; }
+  @media (max-width:760px) { .rawgrid { grid-template-columns:1fr; } }
+  #audit { margin:0; padding:0; }
+  #audit li { padding:5px 0; border-bottom:1px dashed var(--line); list-style:none; }
+  .tag { display:inline-block; min-width:56px; text-align:center; border-radius:4px;
+         padding:1px 6px; font-size:11px; font-weight:700; }
+  .tag.PASS { background:#14532d; color:#bbf7d0; }
+  .tag.FAIL { background:#7f1d1d; color:#fecaca; }
+  .tag.SKIP { background:#334155; color:#cbd5e1; }
+  .err { background:#7f1d1d; border:1px solid var(--bad); color:#fecaca;
+         padding:8px 10px; border-radius:6px; margin-top:8px; white-space:pre-wrap; }
+  .okmsg { background:#14532d; border:1px solid var(--ok); color:#bbf7d0;
+           padding:8px 10px; border-radius:6px; margin-top:8px; }
+  .muted { color:var(--muted); font-size:12px; }
+  code { background:var(--panel2); padding:1px 5px; border-radius:4px; }
+  textarea { background:var(--panel2); border:1px solid var(--line); color:var(--txt);
+             font:12px/1.5 ui-monospace,monospace; border-radius:6px; padding:8px;
+             width:100%; min-height:170px; }
+  .verdict-ok { color:var(--ok); font-weight:700; }
+  .verdict-bad { color:var(--bad); font-weight:700; }
+
+  /* ---- Grafik actual vs forecast ---- */
+  .chart-card { margin-top:16px; border:1px solid var(--line); border-radius:8px;
+                padding:14px; background:#0b1220; }
+  .chart-heading { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+  .chart-heading h3 { margin:0; font-size:13px; color:var(--accent);
+                      text-transform:uppercase; letter-spacing:.06em; }
+  .chart-heading p { margin:3px 0 0; font-size:12px; }
+  .chart-legend { display:flex; flex-wrap:wrap; gap:14px; margin:10px 0 8px;
+                  font-size:12px; color:var(--muted); align-items:center; }
+  .legend-line { display:inline-block; width:18px; height:0;
+                 border-top:2px solid currentColor; margin-right:5px;
+                 vertical-align:middle; }
+  .actual-line { color:var(--series-actual); }
+  .forecast-line { color:var(--series-forecast); border-top-style:dashed; }
+  .legend-area { display:inline-block; width:18px; height:10px;
+                 background:rgba(148,163,184,.35); border:1px solid rgba(148,163,184,.7);
+                 margin-right:5px; vertical-align:-1px; }
+  .chart-viewport { position:relative; }
+  .comparison-chart { display:block; width:100%; height:auto; outline:none; }
+  .comparison-chart:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .chart-path { fill:none; stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+  .actual-path { stroke:var(--series-actual); }
+  .forecast-path { stroke:var(--series-forecast); stroke-dasharray:6 4; }
+  /* selector by id: elemen g dibuat tanpa class saat runtime */
+  #chartBand polygon { fill:rgba(148,163,184,.35); stroke:none; }
+  .chart-grid line, .chart-axes line { stroke:var(--line); stroke-width:1; }
+  .chart-axes text { fill:var(--muted); font-size:11px; font-family:inherit; }
+  .marker { r:4.5; stroke-width:2; }
+  .actual-marker { fill:var(--series-actual); stroke:#0b1220; }
+  .forecast-marker { fill:var(--series-forecast); stroke:#0b1220; }
+  #chartMarkers .actual-marker { r:4.5; }
+  #chartMarkers .forecast-marker { r:4.5; }
+  .chart-crosshair line { stroke:var(--txt); stroke-width:1; stroke-opacity:.45; }
+  .chart-hit-area { fill:transparent; cursor:crosshair; }
+  .chart-tooltip { position:absolute; pointer-events:none; background:var(--panel2);
+                   border:1px solid var(--line); border-radius:6px; padding:8px 10px;
+                   font-size:12px; min-width:180px; z-index:5;
+                   box-shadow:0 6px 20px rgba(0,0,0,.35); }
+  .tt-date { color:var(--muted); margin-bottom:5px; }
+  .tt-row { display:flex; justify-content:space-between; gap:14px; }
+  .tt-row .tt-key { color:var(--muted); }
+  .tt-row .tt-val { font-variant-numeric:tabular-nums; color:var(--txt); font-weight:700; }
+  .tt-row .tt-stroke { display:inline-block; width:14px; height:0;
+                        border-top:2px solid currentColor; margin-right:5px;
+                        vertical-align:middle; }
+  .chart-empty { padding:26px 14px; text-align:center; color:var(--muted);
+                 border:1px dashed var(--line); border-radius:6px; font-size:13px; }
+  .chart-table-details { margin-top:8px; font-size:13px; }
+  .chart-table-details summary { cursor:pointer; color:var(--muted); }
+  .chart-table-scroll { max-height:240px; overflow:auto; margin-top:6px; }
+  .chart-table-details table { margin-top:0; }
+  .table-scroll { width:100%; overflow-x:auto; }
+  #runTable { min-width:620px; }
+
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>⚡ Engineer Console</h1>
+    <div class="sub">Forecasting Service PLTS Kupang — halaman ini konsumen API, untuk ENGINEER.</div>
+  </div>
+  <nav>
+    <a href="/docs">Swagger /docs</a>
+    <a href="/redoc">ReDoc</a>
+    <a href="/openapi.json">OpenAPI</a>
+    <a href="/api/v1/health">Health</a>
+  </nav>
+</header>
+
+<main>
+
+<!-- Peran dikunci di templates/ROLE.md — perubahan peran harus diubah di sana dulu -->
+<div class="banner">
+  <b>Peran halaman ini (templates/ROLE.md):</b> untuk <i>engineer</i> memilih site,
+  mengubah horizon, menjalankan forecast <i>manual</i>, dan membandingkan hasil
+  dengan data aktual.<br>
+  Forecast untuk <b>pengguna akhir tetap ditampilkan lewat platform monitoring
+  utama</b> — halaman ini bukan tampilan produksi dan tidak ditujukan ke pengguna akhir.
+</div>
+
+<!-- Ringkasan otomatis (tanpa klik): KPI + status tiap endpoint. Tujuannya
+     supaya sebelum menyerahkan API ke tim monitoring, metrik & kesehatan
+     layanan terlihat langsung — tanpa membuka file atau membuka /docs. -->
+<section id="summaryPanel" aria-labelledby="summaryTitle">
+  <h2 id="summaryTitle">Ringkasan layanan &amp; model
+    <span class="hint">(terisi otomatis saat halaman dibuka)</span></h2>
+
+  <!-- KPI: MAE/MAPE/Last run/Model/Data rows -->
+  <div class="kpi-grid" id="kpiGrid">
+    <div class="kpi"><b>Last run</b><span id="kpiLastRun">–</span><small id="kpiLastRunSrc"></small></div>
+    <div class="kpi"><b>Model</b><span id="kpiModel">–</span><small id="kpiModelSrc"></small></div>
+    <div class="kpi"><b>MAE</b><span id="kpiMae">–</span><small id="kpiMaeSrc"></small></div>
+    <div class="kpi"><b>MAPE</b><span id="kpiMape">–</span><small id="kpiMapeSrc"></small></div>
+    <div class="kpi"><b>Data rows</b><span id="kpiRows">–</span><small id="kpiRowsSrc"></small></div>
+  </div>
+  <div id="kpiStatus" class="muted" style="margin-top:6px"></div>
+
+  <!-- Status tiap endpoint: health terpanggil/tidak + HTTP code -->
+  <div class="row" style="margin-top:14px">
+    <h3 style="margin:0;font-size:12px;color:var(--accent);text-transform:uppercase;letter-spacing:.06em">Uji endpoint</h3>
+    <button class="ghost" id="probeAllBtn">▶ Uji semua endpoint</button>
+    <span class="muted">ringkas untuk integrasi ke tim platform monitoring</span>
+  </div>
+  <div class="endpoint-grid" id="endpointGrid" role="list"></div>
+  <div id="probeErr"></div>
+
+  <!-- Pane pilihan manual: menampilkan JSON terpilih sehingga engineer bisa
+       select-all + Ctrl+C bila Clipboard API ditolak (mis. di context embed).
+       Ini mitra tombol "Salin JSON" — "pilih manual" tanpa yang bisa dipilih
+       adalah janji yang tidak ditepati. -->
+  <div class="copy-viewer" id="copyViewer" hidden>
+    <div class="row" style="justify-content:space-between">
+      <span class="muted" id="copyViewerLabel">—</span>
+      <button class="ghost" id="copyViewerClose" type="button">Tutup</button>
+    </div>
+    <textarea id="copyViewerText" spellcheck="false" readonly
+              aria-label="Response JSON terpilih untuk disalin manual"></textarea>
+    <div class="row" style="margin-top:6px">
+      <button class="ghost" id="copyViewerCopy" type="button">Salin lagi</button>
+      <span class="muted">atau select-all di atas, lalu Ctrl+C / ⌘+C</span>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>1 · Koneksi &amp; pilihan konteks</h2>
+  <div class="row">
+    <label for="site">Site:</label>
+    <select id="site">
+      <option value="PLTS_KUPANG">PLTS_KUPANG</option>
+      <option value="__custom__">… ketik manual</option>
+    </select>
+    <input type="text" id="siteCustom" placeholder="site_id lain" hidden>
+    <label for="horizon">Horizon:</label>
+    <input type="number" id="horizon" min="1" max="30" value="7">
+    <span class="muted">hari (1–30)</span>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label for="apiKey">API Key:</label>
+    <input type="password" id="apiKey" placeholder="X-API-Key (localStorage)">
+    <button class="ghost" id="saveKey">Simpan</button>
+  </div>
+  <div class="chips">
+    <div class="chip"><b>health</b><span id="hHealth">–</span></div>
+    <div class="chip"><b>service_version</b><span id="hVer">–</span></div>
+    <div class="chip"><b>uptime</b><span id="hUp">–</span></div>
+    <div class="chip"><b>latest</b><span id="hLatest">–</span></div>
+    <div class="chip"><b>manual run</b><span id="hRun">–</span></div>
+    <div class="chip"><b>evaluasi</b><span id="hEval">–</span></div>
+  </div>
+  <div id="connErr"></div>
+</section>
+
+<section>
+  <h2>2 · Jalankan forecast manual <span class="hint">(fungsi #3 — POST /api/v1/forecast)</span></h2>
+  <div class="row">
+    <button id="runBtn">▶ Jalankan forecast</button>
+    <span class="muted">request/response JSON mentah ada di bawah — salin untuk integrasi</span>
+    <button class="ghost" id="genHistory">Bangun history contoh</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <label for="historyTa">history JSON —
+      <code>[{timestamp,value},…]</code> minimal 30 titik harian, tz-aware</label>
+  </div>
+  <textarea id="historyTa" spellcheck="false"
+            placeholder="Klik “Bangun history contoh” untuk mengisi 60 hari otomatis, lalu sunting sesuai kebutuhan."></textarea>
+  <div id="runErr"></div>
+  <div id="runOk" class="okmsg" hidden></div>
+
+  <!-- Response mentah ditampilkan SEBELUM tabel tersetifikasi: saat
+       integrasi, yang dibutuhkan adalah JSON persis yang dikirim server,
+       termasuk field yang tak terduga. -->
+  <div class="row" style="margin-top:12px">
+    <h3 style="margin:0;font-size:12px;color:var(--accent);text-transform:uppercase;letter-spacing:.06em">Request &amp; response mentah</h3>
+    <button class="ghost" id="copyReq" disabled>Salin request</button>
+    <button class="ghost" id="copyCurl" disabled>Salin sebagai cURL</button>
+    <button class="ghost" id="copyRes" disabled>Salin response</button>
+  </div>
+  <div class="rawgrid">
+    <div>
+      <div class="rawhead">Request JSON (terkirim ke server)</div>
+      <pre id="rawReq" class="raw">— belum ada panggilan —</pre>
+    </div>
+    <div>
+      <div class="rawhead">Response mentah <span id="rawStatus" class="muted"></span></div>
+      <pre id="rawRes" class="raw">— belum ada panggilan —</pre>
+    </div>
+  </div>
+
+  <table id="runTable" hidden>
+    <thead><tr><th>#</th><th>forecast_time</th><th style="text-align:right">forecast_value</th><th>model_version</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <!-- Grafik baru muncul setelah POST sukses + actual fetch. Band adalah
+       error absolut per tanggal — BUKAN prediction interval/uncertainty. -->
+  <figure id="comparisonFigure" class="chart-card" hidden aria-labelledby="chartTitle">
+    <div class="chart-heading">
+      <div>
+        <h3 id="chartTitle">Aktual vs forecast</h3>
+        <p id="chartSummary" class="muted" aria-live="polite"></p>
+      </div>
+      <button class="ghost" id="chartTableToggle" type="button" aria-expanded="false">
+        Tampilkan tabel grafik
+      </button>
+    </div>
+    <div class="chart-legend" aria-label="Legenda grafik">
+      <span><i class="legend-line actual-line"></i> Aktual</span>
+      <span><i class="legend-line forecast-line"></i> Forecast</span>
+      <span><i class="legend-area"></i> Selisih |aktual−forecast| (error absolut, bukan interval ketidakpastian)</span>
+    </div>
+    <div id="chartEmpty" class="chart-empty" hidden></div>
+    <div id="chartViewport" class="chart-viewport">
+      <svg id="comparisonChart" class="comparison-chart" viewBox="0 0 900 360"
+           role="img" aria-labelledby="chartTitle chartDesc" tabindex="0"
+           preserveAspectRatio="xMidYMid meet">
+        <desc id="chartDesc">Grafik garis irradiance aktual dan forecast, dengan pita selisih absolut di antara keduanya.</desc>
+        <g id="chartGrid"></g>
+        <g id="chartBand"></g>
+        <path id="actualPath" class="chart-path actual-path"></path>
+        <path id="forecastPath" class="chart-path forecast-path"></path>
+        <g id="chartMarkers"></g>
+        <g id="chartCrosshair" class="chart-crosshair" hidden>
+          <line id="crosshairLine"></line>
+          <circle id="crosshairActual" class="marker actual-marker"></circle>
+          <circle id="crosshairForecast" class="marker forecast-marker"></circle>
+        </g>
+        <g id="chartAxes"></g>
+        <rect id="chartHitArea" class="chart-hit-area" x="66" y="20" width="810" height="290"></rect>
+      </svg>
+      <div id="chartTooltip" class="chart-tooltip" role="status" aria-live="polite" hidden></div>
+    </div>
+    <details id="chartTableDetails" class="chart-table-details" hidden>
+      <summary>Tabel accessible — semua nilai actual, forecast, dan error</summary>
+      <div class="chart-table-scroll">
+        <table id="comparisonTable">
+          <caption>Nilai aktual, forecast, dan selisih absolut per tanggal (W/m²)</caption>
+          <thead><tr><th>Tanggal</th><th>Aktual (W/m²)</th><th>Forecast (W/m²)</th><th>Error absolut (W/m²)</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </details>
+  </figure>
+</section>
+
+<section>
+  <h2>3 · Perbandingan dengan data aktual <span class="hint">(fungsi #4 — GET /model/performance)</span></h2>
+  <div class="row">
+    <button class="ghost" id="evalBtn">Muat metrik aktual vs forecast</button>
+    <span class="muted">MAE / RMSE / MAPE / skill dihitung dari holdout terakhir (STAGI_EVALUASI.md §5)</span>
+  </div>
+  <div id="evalErr"></div>
+  <div id="evalVerdict" class="muted"></div>
+  <table id="evalTable" hidden>
+    <thead><tr><th>horizon</th><th style="text-align:right">MAE</th>
+      <th style="text-align:right">MAPE %</th><th style="text-align:right">RMSE</th>
+      <th style="text-align:right">skill</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="chips" id="evalChips" hidden></div>
+  <div class="muted" style="margin-top:8px">
+    Perbandingan per-titik (forecast vs aktual di tanggal yang sama) ada di
+    <b>§2b · Grafik aktual vs forecast</b> — memakai
+    <code>GET /api/v1/forecast/actual</code> (data historis, 2023-01-01 → 2025-12-31).
+    Metrik agregat di atas berasal dari backtest holdout dengan data aktual yang sama.
+  </div>
+</section>
+
+<section>
+  <h2>4 · Forecast terbaru tersimpan <span class="hint">(verifikasi endpoint yang sama dengan monitoring)</span></h2>
+  <div class="row">
+    <button class="ghost" id="latestBtn">GET /forecast/latest</button>
+    <span class="muted">bukan untuk pengguna akhir — hanya verifikasi endpoint</span>
+  </div>
+  <div class="chips" id="ctxChips"></div>
+  <div id="fcErr"></div>
+  <table id="fcTable" hidden>
+    <thead><tr><th>#</th><th>forecast_time</th><th style="text-align:right">forecast_value</th><th>model_version</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<section>
+  <h2>4b · Metadata model <span class="hint">(verifikasi versi/fitur sebelum run manual)</span></h2>
+  <div class="row">
+    <button class="ghost" id="infoBtn">GET /model/info</button>
+    <span class="muted">mengecek versi &amp; urutan fitur yang akan dipakai engine</span>
+  </div>
+  <div id="infoErr"></div>
+  <div class="chips" id="infoChips"></div>
+</section>
+
+<section>
+  <h2>5 · Audit kontrak otomatis <span class="hint">(deteksi drift tiap halaman dibuka)</span></h2>
+  <ul id="audit"></ul>
+  <div class="muted" id="auditVerdict"></div>
+</section>
+
+<section>
+  <h2>6 · Log panggilan</h2>
+  <div id="log" class="muted">Belum ada panggilan.</div>
+</section>
+
+</main>
+
+<script>
+"use strict";
+
+/* Konsumen API murni: semua data dari fetch(/api/v1/...). Tidak ada logika
+   forecast dan tidak ada data forecast yang dibakar di halaman ini. */
+
+const CTX_FIELDS = ["site_id", "generated_at", "unit", "model_version"];
+const VALID_HEALTH_STATUS = ["ok", "degraded", "unavailable"];
+
+const $ = (id) => document.getElementById(id);
+const log = [];
+let apiKey = localStorage.getItem("forecast_api_key") || "";
+$("apiKey").value = apiKey;
+
+function site() {
+  const sel = $("site").value;
+  return sel === "__custom__" ? ($("siteCustom").value.trim() || "PLTS_KUPANG") : sel;
+}
+function horizon() {
+  const v = parseInt($("horizon").value, 10);
+  return Number.isInteger(v) && v >= 1 && v <= 30 ? v : 7;
+}
+
+function addLog(line) {
+  log.unshift(new Date().toLocaleTimeString() + "  " + line);
+  $("log").textContent = log.slice(0, 14).join("\n");
+}
+
+async function api(path, { auth = false, method = "GET", body = null } = {}) {
+  const headers = {};
+  if (auth && apiKey) headers["X-API-Key"] = apiKey;
+  if (body) headers["Content-Type"] = "application/json";
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  let data = null;
+  try { data = await res.json(); } catch (_) { /* non-JSON */ }
+  return { status: res.status, data, headers: res.headers };
+}
+
+function setPill(id, status, text) {
+  const cls = status === true ? "ok" : status === false ? "bad" : "warn";
+  $(id).innerHTML = `<span class="pill ${cls}">${text}</span>`;
+}
+
+function showErr(id, r) {
+  const el = $(id);
+  if (!r || r.status < 400) { el.innerHTML = ""; return; }
+  const e = (r.data && r.data.error) || {};
+  el.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "err";
+  div.textContent = `${r.status} ${e.code || "?"} — ${e.message || "tanpa pesan"}` +
+    (e.details ? "\ndetails: " + JSON.stringify(e.details) : "");
+  el.appendChild(div);
+}
+
+function renderForecastTable(tableId, points) {
+  const tb = $(tableId), tbody = tb.querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const [i, p] of points.entries()) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${i + 1}</td><td></td><td class="num"></td><td></td>`;
+    tr.cells[1].textContent = p.forecast_time;
+    tr.cells[2].textContent = Number(p.forecast_value).toFixed(3);
+    tr.cells[3].textContent = p.model_version;
+    tbody.appendChild(tr);
+  }
+  tb.hidden = points.length === 0;
+}
+
+function renderContext(last) {
+  const box = $("ctxChips");
+  box.innerHTML = "";
+  if (!last) return;
+  for (const f of CTX_FIELDS.concat(["horizon", "resolution", "order", "ts"])) {
+    if (!(f in last)) continue;
+    const d = document.createElement("div");
+    d.className = "chip";
+    d.innerHTML = `<b>${f}</b>`;
+    d.appendChild(document.createTextNode(String(last[f])));
+    box.appendChild(d);
+  }
+}
+
+/* --- audit (tetap, untuk deteksi drift kontrak) --- */
+const auditRows = [];
+function audit(name, ok, detail) { auditRows.push({ name, ok, detail: detail || "" }); }
+function renderAudit() {
+  const ul = $("audit");
+  ul.innerHTML = "";
+  let fails = 0;
+  for (const row of auditRows) {
+    const li = document.createElement("li");
+    const tag = row.ok === null ? "SKIP" : row.ok ? "PASS" : "FAIL";
+    if (row.ok === false) fails++;
+    li.innerHTML = `<span class="tag ${tag}">${tag}</span> <span>${row.name}</span>` +
+      (row.detail ? ` <span class="muted">— ${row.detail}</span>` : "");
+    ul.appendChild(li);
+  }
+  $("auditVerdict").innerHTML = fails
+    ? `<span class="verdict-bad">⚠ ${fails} pelanggaran kontrak terdeteksi.</span>`
+    : `<span class="verdict-ok">✓ Semua pemeriksaan kontrak lulus.</span>`;
+}
+
+function auditHealth(h) {
+  if (!h) { audit("health: respons terbaca", false, "bukan JSON"); return; }
+  audit("health: status dalam enum kontrak", VALID_HEALTH_STATUS.includes(h.status), h.status);
+  audit("health: model_version tidak dibocorkan", !("model_version" in h));
+  audit("health: service_version + uptime ada",
+        "service_version" in h && "uptime_seconds" in h);
+}
+
+function auditForecastPayload(f) {
+  if (!f) { audit("forecast: payload ada", false); return; }
+  const missing = CTX_FIELDS.filter((x) => !(x in f));
+  audit("konteks lengkap (site_id, generated_at, unit, model_version)",
+        missing.length === 0, missing.length ? "hilang: " + missing.join(", ") : "");
+  const pts = f.forecast || [];
+  audit("panjang forecast == horizon", pts.length === f.horizon,
+        `${pts.length} vs ${f.horizon}`);
+  const bad = pts.find((p) => !("forecast_time" in p) || !("forecast_value" in p) ||
+                              !("model_version" in p));
+  audit("setiap poin punya forecast_time/value/model_version", !bad);
+  const badNum = pts.find((p) => typeof p.forecast_value !== "number" || p.forecast_value < 0);
+  audit("forecast_value angka & >= 0", !badNum);
+  const tzs = new Set(pts.map((p) => String(p.forecast_time).slice(-6)));
+  audit("timestamp offset eksplisit & sama (§1.5)",
+        tzs.size === 1 && [...tzs][0] === "+08:00", [...tzs].join(","));
+}
+
+/* ---------------- Fungsi #1 & #2: site & horizon ---------------- */
+$("site").addEventListener("change", () => {
+  $("siteCustom").hidden = $("site").value !== "__custom__";
+  if ($("site").value === "__custom__") $("siteCustom").focus();
+  addLog("site dipilih: " + site());
+});
+$("horizon").addEventListener("change", () => {
+  addLog("horizon diubah: " + horizon());
+});
+
+/* ---------------- Fungsi #3: forecast manual ---------------- */
+function buildSampleHistory() {
+  // Bangun history contoh deterministik 60 hari di zona site.
+  const tz = "+08:00";
+  const start = Date.UTC(2024, 0, 1);
+  const out = [];
+  for (let i = 0; i < 60; i++) {
+    const d = new Date(start + i * 86400000);
+    const iso = d.toISOString().slice(0, 10);
+    const doy = i + 1;
+    const v = Math.max(0, 180 + 60 * Math.sin(2 * Math.PI * doy / 365.25));
+    out.push({ timestamp: iso + "T00:00:00" + tz, value: Math.round(v * 1000) / 1000 });
+  }
+  $("historyTa").value = JSON.stringify(out, null, 1);
+  addLog("history contoh dibuat (60 hari)");
+}
+
+async function runManual() {
+  $("runBtn").disabled = true;
+  $("runErr").innerHTML = "";
+  $("runOk").hidden = true;
+  $("rawStatus").textContent = "";
+  $("rawReq").textContent = "menyiapkan request…";
+  $("rawRes").textContent = "menunggu response…";
+  $("runTable").hidden = true;
+  auditRows.length = 0;
+
+  if (!apiKey) {
+    showErr("runErr", { status: 401, data: { error: { code: "E_UNAUTHORIZED",
+      message: "isi API key dulu di §1" } } });
+    $("rawReq").textContent = "belum dikirim — X-API-Key belum diisi";
+    $("rawStatus").textContent = "HTTP 401 (client-side gate)";
+    $("rawRes").textContent = JSON.stringify({error:{code:"E_UNAUTHORIZED",message:"isi API key dulu di §1"}}, null, 2);
+    setPill("hRun", false, "butuh key");
+    auditRows.push({ name: "manual run", ok: null, detail: "API key belum diisi" });
+    renderAudit();
+    $("runBtn").disabled = false;
+    return;
+  }
+
+  let history;
+  try {
+    history = JSON.parse($("historyTa").value);
+    if (!Array.isArray(history)) throw new Error("bukan array");
+  } catch (e) {
+    showErr("runErr", { status: 400, data: { error: { code: "E_VALIDATION_FAILED",
+      message: "history JSON tidak valid: " + e.message } } });
+    $("rawReq").textContent = $("historyTa").value;
+    $("rawStatus").textContent = "HTTP 400 (parse lokal)";
+    $("rawRes").textContent = JSON.stringify({error:{code:"E_VALIDATION_FAILED",message:"history JSON tidak valid: " + e.message}}, null, 2);
+    setPill("hRun", false, "JSON rusak");
+    audit("manual run: history JSON valid", false, e.message);
+    renderAudit();
+    $("runBtn").disabled = false;
+    return;
+  }
+
+  const body = {
+    site_id: site(),
+    target: "irradiance",
+    resolution: "daily",
+    horizon: horizon(),
+    history,
+  };
+  // Tampilkan request persis sebelum dikirim — engineer bisa membandingkan
+  // bentuk payload dengan schema ForecastRequest di /docs.
+  const requestRaw = JSON.stringify(body, null, 2);
+  $("rawReq").textContent = requestRaw;
+  $("copyReq").disabled = false;
+  $("copyReq").onclick = () => copyText(requestRaw, $("copyReq"), "request POST /forecast");
+  const curlRaw = `curl -X POST '${location.origin}/api/v1/forecast' \\\n  -H 'Content-Type: application/json' \\\n  -H 'X-API-Key: <GANTI_DENGAN_API_KEY>' \\\n  --data-raw '${JSON.stringify(body).replace(/'/g, "'\\''")}'`;
+  $("copyCurl").disabled = false;
+  $("copyCurl").onclick = () => copyText(curlRaw, $("copyCurl"), "contoh cURL");
+  addLog(`POST /forecast site=${body.site_id} horizon=${body.horizon} n=${history.length}`);
+
+  let r;
+  try {
+    r = await api("/api/v1/forecast", { auth: true, method: "POST", body });
+  } catch (e) {
+    // Network error pun ditampilkan mentah — bukan hanya ke console browser.
+    const networkRaw = JSON.stringify({ error: { message: String(e), kind: "network_error" } }, null, 2);
+    $("rawRes").textContent = networkRaw;
+    $("rawStatus").textContent = "network error";
+    $("copyRes").disabled = false;
+    $("copyRes").onclick = () => copyText(networkRaw, $("copyRes"), "respons network error POST /forecast");
+    showErr("runErr", { status: 0, data: { error: { code: "NETWORK_ERROR", message: String(e) } } });
+    setPill("hRun", false, "network error");
+    addLog("POST /forecast -> network error");
+    $("runBtn").disabled = false;
+    return;
+  }
+
+  // Tampilkan RESPONSE MENTAH persis seperti JSON server, sebelum tabel,
+  // pembulatan tampilan, atau audit schema — itulah sumber kebenaran integrasi.
+  const responseRaw = r.data !== null
+    ? JSON.stringify(r.data, null, 2)
+    : "(server tidak mengembalikan JSON)";
+  $("rawRes").textContent = responseRaw;
+  $("rawStatus").textContent = `HTTP ${r.status}`;
+  $("copyRes").disabled = r.data === null;
+  $("copyRes").onclick = () => copyText(responseRaw, $("copyRes"), "respons POST /forecast");
+  showErr("runErr", r);
+
+  if (r.status === 200 && r.data) {
+    setPill("hRun", true, "200");
+    $("runOk").hidden = false;
+    $("runOk").textContent =
+      `Forecast dijalankan manual — site=${r.data.site_id} ` +
+      `horizon=${r.data.horizon} ${r.data.unit} · generated_at=${r.data.generated_at}` +
+      ` · model=${r.data.model_version}`;
+    renderForecastTable("runTable", r.data.forecast || []);
+    addLog("POST /forecast -> 200");
+    auditForecastPayload(r.data);
+    audit("site di request == site di respons", r.data.site_id === body.site_id,
+          `${r.data.site_id}`);
+    audit("horizon di request == horizon di respons", r.data.horizon === body.horizon,
+          `${r.data.horizon}`);
+    // Grafik actual vs forecast: fetch data aktual dari API (bukan CSV),
+    // lalu gambar. Dipanggil SETELAH tabel & audit, agar table view selalu
+    // ada walau fetch actual gagal.
+    loadActualsAndDraw(r.data.forecast || [], body.site_id).catch(err => {
+      showChartEmpty(`Data aktual gagal diambil: ${err.message}`);
+      audit("actual API: diambil", false, err.message);
+      renderAudit();
+    });
+  } else {
+    setPill("hRun", false, String(r.status));
+    audit("manual run sukses", false, `${r.status}`);
+    addLog(`POST /forecast -> ${r.status}`);
+  }
+
+  renderAudit();
+  $("runBtn").disabled = false;
+}
+
+$("runBtn").addEventListener("click", runManual);
+$("genHistory").addEventListener("click", buildSampleHistory);
+
+/* ---------------- Fungsi #4: perbandingan dengan aktual ---------------- */
+async function loadEvaluation() {
+  $("evalErr").innerHTML = "";
+  if (!apiKey) {
+    showErr("evalErr", { status: 401, data: { error: { code: "E_UNAUTHORIZED",
+      message: "isi API key dulu di §1" } } });
+    setPill("hEval", false, "butuh key");
+    return;
+  }
+  const s = site();
+  addLog(`GET /model/performance site=${s}`);
+  const r = await api(`/api/v1/model/performance?site_id=${encodeURIComponent(s)}`, { auth: true });
+  showErr("evalErr", r);
+  if (r.status !== 200 || !r.data) {
+    setPill("hEval", false, String(r.status));
+    return;
+  }
+  const d = r.data;
+  setPill("hEval", true, `200 · ${d.status}`);
+
+  const table = $("evalTable"), tbody = table.querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const h of d.horizons || []) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${h.horizon} hari</td>` +
+      `<td class="num">${Number(h.mae).toFixed(3)}</td>` +
+      `<td class="num">${Number(h.mape).toFixed(2)}</td>` +
+      `<td class="num">${Number(h.rmse).toFixed(3)}</td>` +
+      `<td class="num">${h.skill >= 0 ? "+" : ""}${Number(h.skill).toFixed(3)}</td>`;
+    tbody.appendChild(tr);
+  }
+  table.hidden = !(d.horizons || []).length;
+
+  const chips = $("evalChips");
+  chips.hidden = false;
+  chips.innerHTML = "";
+  const primary = (d.thresholds && d.thresholds.primary_horizon) || 7;
+  const facts = {
+    "status": d.status,
+    "site_id": d.site_id,
+    "unit": d.unit,
+    "model_version": d.model_version,
+    "holdout": d.evaluation_range ? `${d.evaluation_range.from.slice(0,10)} → ${d.evaluation_range.to.slice(0,10)}` : "–",
+    "n_samples": d.n_samples,
+    "ambang MAPE": `${d.thresholds.max_mape}%`,
+    "horizon utama": `${primary} hari`,
+  };
+  for (const [k, v] of Object.entries(facts)) {
+    const div = document.createElement("div");
+    div.className = "chip";
+    div.innerHTML = `<b>${k}</b>`;
+    div.appendChild(document.createTextNode(String(v)));
+    chips.appendChild(div);
+  }
+
+  const verdict = $("evalVerdict");
+  if (d.status === "GO") {
+    verdict.innerHTML = `<span class="verdict-ok">GO — semua ambang lulus.</span>`;
+  } else if (d.status === "NO_GO") {
+    verdict.innerHTML = `<span class="verdict-bad">NO-GO — metrik di atas melebihi ambang.</span>` +
+      `<br><span class="muted">Alasan: ${(d.failures || []).join(" · ")}</span>`;
+  } else {
+    verdict.innerHTML = `<span class="muted">UNKNOWN — pipeline evaluasi belum pernah
+      menghasilkan laporan untuk site ini (jalankan scripts/run_evaluation.py).</span>`;
+  }
+  addLog(`evaluasi -> ${d.status}`);
+}
+$("evalBtn").addEventListener("click", loadEvaluation);
+
+/* ---------------- Fungsi pendukung: latest (verifikasi endpoint) ---------------- */
+async function loadLatest() {
+  $("fcErr").innerHTML = "";
+  if (!apiKey) {
+    showErr("fcErr", { status: 401, data: { error: { code: "E_UNAUTHORIZED",
+      message: "isi API key dulu di §1" } } });
+    setPill("hLatest", false, "butuh key");
+    return;
+  }
+  const s = site();
+  addLog(`GET /forecast/latest site=${s}`);
+  const r = await api(`/api/v1/forecast/latest?site_id=${encodeURIComponent(s)}`, { auth: true });
+  showErr("fcErr", r);
+  if (r.status === 200 && r.data) {
+    setPill("hLatest", true, "200");
+    renderContext(r.data);
+    renderForecastTable("fcTable", r.data.forecast || []);
+    addLog("GET /latest -> 200");
+    auditForecastPayload(r.data);
+    renderAudit();
+  } else {
+    setPill("hLatest", false, String(r.status));
+    renderContext(null);
+    renderForecastTable("fcTable", []);
+    addLog(`GET /latest -> ${r.status}`);
+    // E_NO_FORECAST / E_SITE_UNKNOWN adalah respons KONTRAK YANG BENAR
+    // untuk keadaan tertentu — bukan pelanggaran kontrak. Menandai FAIL di
+    // sini menghasilkan alarm palsu (kondisi normal diperlakukan seperti
+    // bug), sama seperti kasus golden test & rate limit sebelumnya.
+    const code = r.data && r.data.error && r.data.error.code;
+    const expected = ["E_NO_FORECAST", "E_SITE_UNKNOWN"];
+    if (expected.includes(code)) {
+      audit("latest: envelope error sesuai kontrak §3.3/§6.1", true,
+            `${r.status} ${code} — keadaan ${code === "E_NO_FORECAST" ? "belum ada forecast (scheduler)" : "site tak terdaftar"}`);
+      $("fcErr").innerHTML += `
+        <div class="muted" style="margin-top:6px">Kondisi normal:
+          <b>${code === "E_NO_FORECAST" ? "forecast belum pernah disimpan — POST /forecast sengaja tidak menyimpan (kontrak §5.1); jalankan scheduler." : "site tidak terdaftar di SITE_IDS."}</b>
+          Bukan pelanggaran kontrak.</div>`;
+    } else {
+      audit("latest diambil", false, String(r.status));
+    }
+    renderAudit();
+  }
+}
+$("latestBtn").addEventListener("click", loadLatest);
+
+/* ---------------- Metadata model (audit versi/fitur) ---------------- */
+async function loadModelInfo() {
+  $("infoErr").innerHTML = "";
+  if (!apiKey) {
+    showErr("infoErr", { status: 401, data: { error: { code: "E_UNAUTHORIZED",
+      message: "isi API key dulu di §1" } } });
+    return;
+  }
+  addLog("GET /model/info");
+  const r = await api("/api/v1/model/info", { auth: true });
+  showErr("infoErr", r);
+  const box = $("infoChips");
+  box.innerHTML = "";
+  if (r.status !== 200 || !r.data) return;
+  const i = r.data;
+  for (const f of ["model_version", "target", "unit", "algorithm", "order",
+                   "features", "trained_at", "evaluation_status"]) {
+    if (!(f in i)) continue;
+    const d = document.createElement("div");
+    d.className = "chip";
+    d.innerHTML = `<b>${f}</b>`;
+    d.appendChild(document.createTextNode(String(i[f])));
+    box.appendChild(d);
+  }
+  audit("model/info: features & order terlapor",
+        Array.isArray(i.features) && i.features.length > 0 &&
+        Array.isArray(i.order) && i.order.length === 3,
+        `features=${JSON.stringify(i.features)}`);
+  addLog("GET /model/info -> 200");
+  renderAudit();
+}
+$("infoBtn").addEventListener("click", loadModelInfo);
+
+/* ---------------- health & kunci ---------------- */
+async function refreshHealth() {
+  const r = await api("/api/v1/health");
+  if (r.status === 200 && r.data) {
+    setPill("hHealth", r.data.status === "ok", r.data.status);
+    $("hVer").textContent = r.data.service_version;
+    $("hUp").textContent = r.data.uptime_seconds + "s";
+    if (!auditRows.some((x) => x.name.startsWith("health:"))) {
+      auditHealth(r.data);
+      renderAudit();
+    }
+  } else {
+    setPill("hHealth", false, String(r.status));
+  }
+  showErr("connErr", r);
+  return r.data;
+}
+
+$("saveKey").addEventListener("click", () => {
+  apiKey = $("apiKey").value.trim();
+  localStorage.setItem("forecast_api_key", apiKey);
+  addLog(apiKey ? "API key disimpan di localStorage" : "API key dikosongkan");
+});
+$("apiKey").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("saveKey").click();
+});
+
+/* ---------------- Grafik actual vs forecast (SVG inline, offline) ---------------- */
+const SVG_NS = "http://www.w3.org/2000/svg";
+let chartRows = [];
+let chartForecastPoints = [];
+let chartActiveIndex = -1;
+
+function svgEl(name, attrs = {}) {
+  const el = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+  return el;
+}
+
+function showChartEmpty(message) {
+  $("chartViewport").hidden = true;
+  $("chartEmpty").hidden = false;
+  $("chartEmpty").textContent = message;
+  $("chartSummary").textContent = "";
+  $("comparisonFigure").hidden = false;
+  $("chartTableDetails").hidden = true;
+}
+
+function clearSvg(group) {
+  while (group.firstChild) group.removeChild(group.firstChild);
+}
+
+function showChartTooltip(index, focus = false) {
+  if (index < 0 || index >= chartRows.length) return;
+  chartActiveIndex = index;
+  const row = chartRows[index];
+  const svg = $("comparisonChart");
+  const tip = $("chartTooltip");
+  const x = row.x;
+  const yA = row.actual == null ? null : row.yActual;
+  const yF = row.yForecast;
+
+  const line = $("crosshairLine");
+  line.setAttribute("x1", x); line.setAttribute("x2", x);
+  line.setAttribute("y1", 20); line.setAttribute("y2", 310);
+  $("chartCrosshair").hidden = false;
+  const ca = $("crosshairActual");
+  ca.hidden = yA == null;
+  if (yA != null) { ca.setAttribute("cx", x); ca.setAttribute("cy", yA); }
+  const cf = $("crosshairForecast");
+  cf.setAttribute("cx", x); cf.setAttribute("cy", yF);
+
+  tip.innerHTML = "";
+  const date = document.createElement("div");
+  date.className = "tt-date";
+  date.textContent = row.timestamp;
+  tip.appendChild(date);
+
+  const addRow = (label, value, color = null) => {
+    const r = document.createElement("div"); r.className = "tt-row";
+    const k = document.createElement("span"); k.className = "tt-key";
+    if (color) {
+      const stroke = document.createElement("i"); stroke.className = "tt-stroke";
+      stroke.style.color = color; k.appendChild(stroke);
+    }
+    k.appendChild(document.createTextNode(label));
+    const v = document.createElement("span"); v.className = "tt-val";
+    v.textContent = value;
+    r.append(k, v); tip.appendChild(r);
+  };
+  addRow("Aktual", yA == null ? "tidak tersedia" : `${row.actual.toFixed(3)} W/m²`, "var(--series-actual)");
+  addRow("Forecast", `${row.forecast.toFixed(3)} W/m²`, "var(--series-forecast)");
+  addRow("Error absolut", yA == null ? "tidak dapat dihitung" : `${Math.abs(row.actual - row.forecast).toFixed(3)} W/m²`);
+
+  const svgRect = svg.getBoundingClientRect();
+  const scaleX = svgRect.width / 900;
+  let left = x * scaleX + 12;
+  if (left + 230 > svgRect.width) left = x * scaleX - 230;
+  tip.style.left = `${Math.max(4, left)}px`;
+  tip.style.top = `${Math.max(4, (Math.min(yA ?? yF, yF) / 360) * svgRect.height - 28)}px`;
+  tip.hidden = false;
+  if (focus) tip.setAttribute("data-focus", "true");
+}
+
+function hideChartTooltip() {
+  $("chartCrosshair").hidden = true;
+  $("chartTooltip").hidden = true;
+  $("chartTooltip").removeAttribute("data-focus");
+  chartActiveIndex = -1;
+}
+
+function drawComparisonChart(forecastPoints, actualResponse) {
+  chartForecastPoints = forecastPoints || [];
+  const svg = $("comparisonChart");
+  const plot = { left: 66, right: 876, top: 20, bottom: 310 };
+  const W = plot.right - plot.left, H = plot.bottom - plot.top;
+
+  $("comparisonFigure").hidden = false;
+  $("chartViewport").hidden = false;
+  $("chartEmpty").hidden = true;
+  $("chartTableDetails").hidden = false;
+  clearSvg($("chartGrid")); clearSvg($("chartBand"));
+  clearSvg($("chartAxes")); clearSvg($("chartMarkers"));
+  $("actualPath").setAttribute("d", "");
+  $("forecastPath").setAttribute("d", "");
+  hideChartTooltip();
+
+  const actualMap = new Map((actualResponse.points || []).map(p => [
+    new Date(p.timestamp).getTime(), Number(p.actual_value)
+  ]));
+  const parsed = forecastPoints.map(p => ({
+    timestamp: p.forecast_time,
+    time: new Date(p.forecast_time).getTime(),
+    forecast: Number(p.forecast_value),
+    actual: actualMap.has(new Date(p.forecast_time).getTime())
+      ? actualMap.get(new Date(p.forecast_time).getTime()) : null,
+  })).sort((a, b) => a.time - b.time);
+
+  const comparable = parsed.filter(p => p.actual != null &&
+    Number.isFinite(p.actual) && Number.isFinite(p.forecast));
+  const gaps = parsed.length - comparable.length;
+  $("chartSummary").textContent = comparable.length
+    ? `${comparable.length}/${parsed.length} tanggal cocok tepat · ${gaps} tanggal tanpa aktual · ` +
+      `band = selisih absolut (bukan interval ketidakpastian) · sumber: ${actualResponse.source}`
+    : `${parsed.length} tanggal forecast · tidak ada data aktual pada rentang ini · ` +
+      `aktual tersedia 2023-01-01 sampai 2025-12-31 · band error hanya ada pada tanggal yang cocok tepat`;
+
+  if (!comparable.length) {
+    showChartEmpty(
+      `Tidak ada aktual yang cocok tepat dengan tanggal forecast ini. ` +
+      `Tidak ada interpolasi atau pencocokan tanggal terdekat. Sumber actual: ${actualResponse.source}.`
+    );
+    renderComparisonTable(parsed);
+    return;
+  }
+
+  const allValues = parsed.flatMap(p => [p.forecast, ...(p.actual == null ? [] : [p.actual])]);
+  let ymin = Math.min(...allValues), ymax = Math.max(...allValues);
+  if (ymax === ymin) { ymax += 1; ymin -= 1; }
+  const pad = (ymax - ymin) * 0.12;
+  ymin = Math.max(0, ymin - pad); ymax += pad;
+  const y = v => plot.bottom - ((v - ymin) / (ymax - ymin)) * H;
+  const x = i => plot.left + (parsed.length <= 1 ? W / 2 : (i / (parsed.length - 1)) * W);
+
+  // Gridlines: 4 neat ticks, solid hairline (no dashed grid).
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) {
+    const value = ymin + (ymax - ymin) * i / ticks;
+    const yy = y(value);
+    $("chartGrid").appendChild(svgEl("line", {x1:plot.left, y1:yy, x2:plot.right, y2:yy}));
+    const label = svgEl("text", {x:plot.left - 8, y:yy + 4, "text-anchor":"end"});
+    label.textContent = value.toFixed(0);
+    $("chartAxes").appendChild(label);
+  }
+
+  // X-axis dates: at most 7 labels, avoid collisions.
+  const labelCount = Math.min(7, parsed.length);
+  const seenLabels = new Set();
+  for (let j = 0; j < labelCount; j++) {
+    const i = Math.round(j * (parsed.length - 1) / Math.max(1, labelCount - 1));
+    const labelText = parsed[i].timestamp.slice(5, 10);
+    if (seenLabels.has(labelText)) continue;
+    seenLabels.add(labelText);
+    const label = svgEl("text", {x:x(i), y:plot.bottom + 24, "text-anchor":"middle"});
+    label.textContent = labelText;
+    $("chartAxes").appendChild(label);
+  }
+
+  // forecast path: all forecast dates (no missing forecast points expected).
+  const fcmd = parsed.map((p,i) => `${i ? "L" : "M"}${x(i).toFixed(2)},${y(p.forecast).toFixed(2)}`).join(" ");
+  $("forecastPath").setAttribute("d", fcmd);
+
+  // Actual line and error band: split at missing actuals; no bridge over gaps.
+  let actualSegments = [], current = [];
+  parsed.forEach((p,i) => {
+    if (p.actual == null || !Number.isFinite(p.actual)) {
+      if (current.length) actualSegments.push(current);
+      current = [];
+    } else current.push({ ...p, i });
+  });
+  if (current.length) actualSegments.push(current);
+  const actualD = actualSegments.map(seg => seg.map((p,j) =>
+    `${j ? "L" : "M"}${x(p.i).toFixed(2)},${y(p.actual).toFixed(2)}`).join(" ")).join(" ");
+  $("actualPath").setAttribute("d", actualD);
+
+  for (const seg of actualSegments) {
+    if (seg.length >= 2) {
+      const top = seg.map(p => `${x(p.i).toFixed(2)},${y(p.actual).toFixed(2)}`);
+      const bottom = [...seg].reverse().map(p => `${x(p.i).toFixed(2)},${y(p.forecast).toFixed(2)}`);
+      $("chartBand").appendChild(svgEl("polygon", {points:top.concat(bottom).join(" ")}));
+    }
+    for (const p of seg) {
+      $("chartMarkers").appendChild(svgEl("circle", {cx:x(p.i),cy:y(p.actual),r:4.5,class:"marker actual-marker"}));
+    }
+  }
+  for (let i = 0; i < parsed.length; i++) {
+    $("chartMarkers").appendChild(svgEl("rect", {x:x(i)-4,y:y(parsed[i].forecast)-4,width:8,height:8,rx:1,class:"marker forecast-marker"}));
+  }
+
+  // Store plotting coordinates for crosshair/tooltip; actual nulls remain gaps.
+  chartRows = parsed.map((p,i) => ({...p, i, x:x(i), yActual:p.actual == null ? null : y(p.actual), yForecast:y(p.forecast)}));
+  renderComparisonTable(parsed);
+  $("chartHitArea").setAttribute("x", plot.left);
+  $("chartHitArea").setAttribute("y", plot.top);
+  $("chartHitArea").setAttribute("width", W);
+  $("chartHitArea").setAttribute("height", H);
+}
+
+function renderComparisonTable(points) {
+  const tbody = $("comparisonTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const p of points) {
+    const tr = document.createElement("tr");
+    const vals = [p.timestamp, p.actual == null ? "—" : p.actual.toFixed(3),
+                  p.forecast.toFixed(3), p.actual == null ? "—" : Math.abs(p.actual-p.forecast).toFixed(3)];
+    vals.forEach((v,i) => { const td=document.createElement("td"); td.textContent=v; if(i>0)td.className="num"; tr.appendChild(td); });
+    tbody.appendChild(tr);
+  }
+}
+
+async function loadActualsAndDraw(forecastPoints, siteId) {
+  if (!forecastPoints || !forecastPoints.length) return;
+  const times = forecastPoints.map(p => p.forecast_time).sort();
+  const params = new URLSearchParams({site_id:siteId, from:times[0], to:times[times.length-1]});
+  addLog("GET /forecast/actual — mengambil data aktual untuk grafik");
+  const r = await api(`/api/v1/forecast/actual?${params.toString()}`, {auth:true});
+  if (r.status !== 200 || !r.data) {
+    showErr("runErr", r);
+    showChartEmpty(`Data aktual tidak dapat dimuat (${r.status} ${(r.data?.error?.code)||""}). Grafik tidak mengarang nilai.`);
+    $("comparisonFigure").hidden = false;
+    audit("actual API: response valid", false, `${r.status}`);
+    renderAudit();
+    return;
+  }
+  const a = r.data;
+  audit("actual API: schema + unit sesuai", a.unit === "W/m2" && a.timezone === "Asia/Makassar" &&
+        Array.isArray(a.points) && a.n === a.points.length,
+        `n=${a.n}, unit=${a.unit}, tz=${a.timezone}`);
+  const forecastTimes = new Set(forecastPoints.map(p=>new Date(p.forecast_time).getTime()));
+  const actualTimes = new Set(a.points.map(p=>new Date(p.timestamp).getTime()));
+  const overlap = [...forecastTimes].filter(t=>actualTimes.has(t)).length;
+  audit("aktual dicocokkan tepat per timestamp (tanpa interpolasi)", true,
+        `${overlap}/${forecastTimes.size} tanggal overlap`);
+  renderAudit();
+  drawComparisonChart(forecastPoints, a);
+}
+
+function bindChartInteractions() {
+  const svg = $("comparisonChart");
+  const hit = $("chartHitArea");
+  const nearest = clientX => {
+    if (!chartRows.length) return -1;
+    const rect = svg.getBoundingClientRect();
+    const svgX = (clientX - rect.left) * (900 / rect.width);
+    let best=0, dist=Infinity;
+    chartRows.forEach((r,i)=>{ const d=Math.abs(r.x-svgX); if(d<dist){dist=d;best=i;} });
+    return best;
+  };
+  hit.addEventListener("pointermove", e=>showChartTooltip(nearest(e.clientX)));
+  hit.addEventListener("pointerleave", hideChartTooltip);
+  svg.addEventListener("keydown", e=>{
+    if(e.key==="Escape"){hideChartTooltip();return;}
+    if(e.key==="ArrowRight"||e.key==="ArrowLeft"){
+      e.preventDefault(); const delta=e.key==="ArrowRight"?1:-1;
+      const i=chartActiveIndex<0?0:Math.max(0,Math.min(chartRows.length-1,chartActiveIndex+delta));
+      showChartTooltip(i,true);
+    }
+  });
+  $("chartTableToggle").addEventListener("click",()=>{
+    const d=$("chartTableDetails"); d.open=!d.open;
+    $("chartTableToggle").setAttribute("aria-expanded",String(d.open));
+    $("chartTableToggle").textContent=d.open?"Sembunyikan tabel grafik":"Tampilkan tabel grafik";
+  });
+}
+bindChartInteractions();
+
+/* ---------------- Ringkasan KPI + status endpoint (panel atas) ----------------
+   Terisi otomatis saat halaman dibuka — tanpa membuka file, tanpa /docs.
+   Semua nilai via textContent (data API = tak terpercaya). */
+
+function fmtStamp(iso) {
+  // TAMPILKAN ISO apa adanya beserta offset aslinya. Jangan konversi ke zona
+  // browser: mesin dev bisa WIB (+07:00) sedangkan situs WITA (+08:00) —
+  // mengonversi justru memunculkan kembali kekeliruan zona yang §1.5 larang.
+  if (!iso) return null;
+  const s = String(iso);
+  const base = s.replace("T", " ").slice(0, 16);          // "2026-10-02 09:49"
+  const m = s.match(/[+-]\d\d:\d\d$/);
+  return m ? `${base} ${m[0]}` : base;
+}
+
+function setKpi(valueId, value, srcText, cls) {
+  const el = $(valueId);
+  el.textContent = value == null ? "–" : String(value);
+  const wrap = el.parentElement;
+  wrap.classList.remove("ok", "bad", "warn");
+  if (cls) wrap.classList.add(cls);
+  const small = wrap.querySelector("small");
+  if (small) small.textContent = srcText || "";
+}
+
+async function refreshSummary() {
+  // Sumber: /model/performance (metrik + waktu backtest asli) dan
+  // /model/info (versi + jumlah baris artefak). Keduanya butuh API key.
+  if (!apiKey) {
+    for (const [id, msg] of [
+      ["kpiLastRun", "butuh API key"], ["kpiModel", "butuh API key"],
+      ["kpiMae", "butuh API key"], ["kpiMape", "butuh API key"],
+      ["kpiRows", "butuh API key"],
+    ]) setKpi(id, null, msg, "warn");
+    $("kpiStatus").textContent = "Isi API key di §1 untuk mengisi ringkasan otomatis.";
+    return;
+  }
+  const s = site();
+
+  // --- Performa (MAE/MAPE pada horizon utama + Last run) ---
+  try {
+    const rp = await api(`/api/v1/model/performance?site_id=${encodeURIComponent(s)}`, { auth: true });
+    if (rp.status === 200 && rp.data) {
+      const d = rp.data;
+      const primary = (d.thresholds && d.thresholds.primary_horizon) || 7;
+      const horizons = Array.isArray(d.horizons) ? d.horizons : [];
+      const h = horizons.find(x => x.horizon === primary) || horizons[0];
+
+      if (h) {
+        setKpi("kpiMae", Number(h.mae).toFixed(3),
+               `horizon ${h.horizon} hari · ${d.unit} · holdout ${primary === h.horizon ? "utama" : "terpanjang"}`);
+        setKpi("kpiMape", Number(h.mape).toFixed(2) + "%",
+               `horizon ${h.horizon} hari · ambang ${d.thresholds ? d.thresholds.max_mape : "–"}%`);
+      } else {
+        setKpi("kpiMae", null, "belum ada laporan backtest", "warn");
+        setKpi("kpiMape", null, "jalankan scripts/run_evaluation.py", "warn");
+      }
+
+      // evaluated_at = waktu backtest DIBUAT (bukan waktu request) — lihat §5.5.
+      const stamp = fmtStamp(d.evaluated_at);
+      setKpi("kpiLastRun", stamp,
+             stamp ? `backtest dibuat · ${d.status}` : "belum pernah dievaluasi",
+             stamp ? null : "warn");
+
+      const st = $("kpiStatus");
+      if (d.status === "GO") st.innerHTML = '<span class="verdict-ok">Status evaluasi: GO — lolos semua ambang.</span>';
+      else if (d.status === "NO_GO") st.innerHTML = '<span class="verdict-bad">Status evaluasi: NO-GO — melebihi ambang.</span>';
+      else st.innerHTML = '<span class="muted">Status evaluasi: UNKNOWN — laporan backtest belum tersedia.</span>';
+
+      setEndpointStatus("performance", "ok", `HTTP 200 · ${d.status}`);
+      addLog(`ringkasan: performance -> 200 (${d.status})`);
+    } else {
+      const code = rp.data && rp.data.error && rp.data.error.code;
+      setKpi("kpiMae", null, `HTTP ${rp.status}${code ? " " + code : ""}`, "bad");
+      setKpi("kpiMape", null, `HTTP ${rp.status}${code ? " " + code : ""}`, "bad");
+      setKpi("kpiLastRun", null, `HTTP ${rp.status}${code ? " " + code : ""}`, "bad");
+      $("kpiStatus").textContent = `Performance tidak terbaca: HTTP ${rp.status} ${code || ""}`;
+      setEndpointStatus("performance", rp.status >= 500 ? "bad" : "warn",
+                        `HTTP ${rp.status}${code ? " · " + code : ""}`);
+    }
+  } catch (e) {
+    setKpi("kpiMae", null, "gagal diambil", "bad");
+    setKpi("kpiMape", null, "gagal diambil", "bad");
+    setKpi("kpiLastRun", null, "gagal diambil", "bad");
+    setEndpointStatus("performance", "bad", "network error");
+  }
+
+  // --- Metadata model (versi + baris artefak) ---
+  try {
+    const ri = await api("/api/v1/model/info", { auth: true });
+    if (ri.status === 200 && ri.data) {
+      const i = ri.data;
+      setKpi("kpiModel", i.model_version, `ARIMA order ${JSON.stringify(i.order)} · ${i.target}`);
+      // training_rows = baris yang benar-benar dilatih (artefak), bukan tebakan.
+      if (Number.isFinite(i.training_rows) && i.training_rows > 0) {
+        setKpi("kpiRows", i.training_rows.toLocaleString("id-ID"),
+               "baris dilatih (artefak training)");
+      }
+      setEndpointStatus("info", "ok", "HTTP 200");
+      addLog("ringkasan: model/info -> 200");
+    } else {
+      const code = ri.data && ri.data.error && ri.data.error.code;
+      setKpi("kpiModel", null, `HTTP ${ri.status}${code ? " " + code : ""}`, "bad");
+      setEndpointStatus("info", ri.status >= 500 ? "bad" : "warn",
+                        `HTTP ${ri.status}${code ? " · " + code : ""}`);
+    }
+  } catch (e) {
+    setKpi("kpiModel", null, "gagal diambil", "bad");
+    setEndpointStatus("info", "bad", "network error");
+  }
+
+  // Cadangan: bila /model/info tidak menyebut training_rows, pakai data_rows
+  // dari performa — tetap angka nyata dari laporan, bukan angka karangan.
+  if ($("kpiRows").textContent === "–") {
+    // sudah terisi oleh performa? kalau tidak, biarkan "–" + alasan
+    if ($("kpiRows").parentElement.querySelector("small").textContent === "") {
+      setKpi("kpiRows", null, "tidak dilaporkan API", "warn");
+    }
+  }
+}
+
+/* ---------------- Grid status endpoint + tombol uji ---------------- */
+const ENDPOINTS = [
+  { key: "health",  method: "GET",  path: "/api/v1/health", query: "",
+    run: () => api("/api/v1/health") },
+  { key: "latest",  method: "GET",  path: "/api/v1/forecast/latest",
+    query: "?site_id=<SITE_ID>",
+    run: () => api(`/api/v1/forecast/latest?site_id=${encodeURIComponent(site())}`, { auth: true }) },
+  { key: "history", method: "GET",  path: "/api/v1/forecast/history",
+    query: "?site_id=<SITE_ID>&limit=5",
+    run: () => api(`/api/v1/forecast/history?site_id=${encodeURIComponent(site())}&limit=5`, { auth: true }) },
+  { key: "actual",  method: "GET",  path: "/api/v1/forecast/actual",
+    query: "?site_id=<SITE_ID>&from=…&to=…",
+    run: () => api(`/api/v1/forecast/actual?site_id=${encodeURIComponent(site())}` +
+                   `&from=${encodeURIComponent(sampleActualFrom())}` +
+                   `&to=${encodeURIComponent(sampleActualTo())}`, { auth: true }) },
+  { key: "info",    method: "GET",  path: "/api/v1/model/info", query: "",
+    run: () => api("/api/v1/model/info", { auth: true }) },
+  { key: "performance", method: "GET", path: "/api/v1/model/performance",
+    query: "?site_id=<SITE_ID>",
+    run: () => api(`/api/v1/model/performance?site_id=${encodeURIComponent(site())}`, { auth: true }) },
+  { key: "forecast", method: "POST", path: "/api/v1/forecast", query: " [body]",
+    run: () => api("/api/v1/forecast", { auth: true, method: "POST", body: sampleForecastBody() }) },
+];
+
+function sampleForecastBody() {
+  // History contoh di dalam memori — tidak menyentuh textarea §2.
+  const pts = [];
+  const start = Date.UTC(2024, 0, 1);
+  for (let i = 0; i < 60; i++) {
+    const d = new Date(start + i * 86400000);
+    const v = Math.max(0, 180 + 60 * Math.sin(2 * Math.PI * (i + 1) / 365.25));
+    pts.push({ timestamp: d.toISOString().slice(0, 10) + "T00:00:00+08:00",
+               value: Math.round(v * 1000) / 1000 });
+  }
+  return { site_id: site(), target: "irradiance", resolution: "daily",
+           horizon: horizon(), history: pts };
+}
+// Rentang contoh di dalam cakupan data aktual (2023-01-01 .. 2025-12-31).
+function sampleActualFrom() { return "2024-03-01T00:00:00+08:00"; }
+function sampleActualTo()   { return "2024-03-07T00:00:00+08:00"; }
+
+function setEndpointStatus(key, cls, text) {
+  const el = document.querySelector(`[data-ep-status="${key}"]`);
+  if (!el) return;
+  el.className = "ep-status " + (cls || "");
+  el.textContent = text;
+}
+
+/* Respons terakhir tiap endpoint — dipakai tombol "Salin JSON".
+   Disimpan MENTAH apa adanya (termasuk envelope error), karena itu yang
+   perlu dilihat tim monitoring saat menulis parser: field name persis
+   seperti yang dikirim server, bukan hasil representerasi ulang halaman. */
+const lastRawResponse = {};
+
+function showCopyViewer(label, text) {
+  // Mitra "Salin JSON": tampilkan JSON terpilih supaya select-all + Ctrl+C
+  // selalu bisa dipakai, walau Clipboard API ditolak (context embed).
+  const viewer = $("copyViewer");
+  $("copyViewerLabel").textContent = label;
+  $("copyViewerText").value = text;
+  viewer.hidden = false;
+  $("copyViewerCopy").onclick = () => copyText(text, $("copyViewerCopy"));
+}
+
+function copyText(text, btn, label = "response", doneLabel = "✓ tersalin") {
+  // Clipboard API butuh user gesture asli; di iframe/context embed bisa
+  // ditolak. Fallback execCommand, lalu tampilkan pane pilihan manual —
+  // jangan biarkan tombol diam.
+  const original = btn ? btn.textContent : null;
+  const mark = (ok, lbl) => {
+    if (!btn) return;
+    btn.textContent = lbl;
+    setTimeout(() => { if (btn.isConnected) btn.textContent = original; }, 1500);
+  };
+  const ok = () => { addLog("JSON disalin ke clipboard"); mark(true, doneLabel); };
+  const fail = () => {
+    mark(false, "gagal — pilih manual");
+    showCopyViewer(label, text);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(ok).catch(() => fallback());
+  } else fallback();
+
+  function fallback() {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const done = document.execCommand("copy");
+      document.body.removeChild(ta);
+      done ? ok() : fail();
+    } catch (_) { fail(); }
+  }
+}
+
+function renderEndpointGrid() {
+  const grid = $("endpointGrid");
+  grid.innerHTML = "";
+  for (const ep of ENDPOINTS) {
+    const row = document.createElement("div");
+    row.className = "endpoint-row";
+    row.setAttribute("role", "listitem");
+    row.dataset.epKey = ep.key;
+
+    const method = document.createElement("span");
+    method.className = "ep-method";
+    method.textContent = ep.method;
+
+    const code = document.createElement("code");
+    // Query contoh per endpoint — bukan satu pola sama rata. /model/info
+    // misalnya tidak butuh site_id; menampilkan pola yang salah justru
+    // menyesatkan tim integrasi.
+    code.textContent = ep.path + (ep.query || "");
+
+    const status = document.createElement("span");
+    status.className = "ep-status";
+    status.dataset.epStatus = ep.key;
+    status.textContent = "belum diuji";
+
+    const copyBtn = document.createElement("button");
+    copyBtn.className = "ghost ep-copy";
+    copyBtn.type = "button";
+    copyBtn.dataset.epCopy = ep.key;
+    copyBtn.disabled = true;
+    copyBtn.textContent = "Salin JSON";
+    copyBtn.title = "Salin response mentah endpoint ini (untuk menulis parser)";
+    copyBtn.addEventListener("click", () => {
+      const raw = lastRawResponse[ep.key];
+      if (raw == null) return;
+      copyText(raw, copyBtn, ep.path + (ep.query || ""));
+    });
+
+    const btn = document.createElement("button");
+    btn.className = "ghost ep-test";
+    btn.type = "button";
+    btn.textContent = "Uji";
+    btn.addEventListener("click", () => probeEndpoint(ep, btn));
+
+    row.append(method, code, status, copyBtn, btn);
+    grid.appendChild(row);
+  }
+}
+
+async function probeEndpoint(ep, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = "…"; }
+  setEndpointStatus(ep.key, "", "memanggil…");
+  const copyBtn = document.querySelector(`[data-ep-copy="${ep.key}"]`);
+  if (copyBtn) copyBtn.disabled = true;
+  let r;
+  try {
+    r = await ep.run();
+  } catch (e) {
+    setEndpointStatus(ep.key, "bad", "network error");
+    lastRawResponse[ep.key] = JSON.stringify(
+      { error: { code: "NETWORK_ERROR", message: String(e) } }, null, 2);
+    if (copyBtn) copyBtn.disabled = false;
+    addLog(`${ep.method} ${ep.path} -> network error`);
+    if (btn) { btn.disabled = false; btn.textContent = "Uji"; }
+    return;
+  }
+  // Simpan response mentah persis — untuk ditimpa bila berikutnya error,
+  // supaya yang bisa disalin selalu representasi paling akurat.
+  lastRawResponse[ep.key] = r.data !== null
+    ? JSON.stringify(r.data, null, 2)
+    : `(server tidak mengembalikan JSON — HTTP ${r.status})`;
+  if (copyBtn) copyBtn.disabled = false;
+  const code = r.data && r.data.error && r.data.error.code;
+  const cls = (r.status >= 200 && r.status < 300) ? "ok"
+            : (r.status >= 500 || r.status === 0) ? "bad" : "warn";
+  setEndpointStatus(ep.key, cls, `HTTP ${r.status}${code ? " · " + code : ""}`);
+  addLog(`${ep.method} ${ep.path} -> ${r.status}${code ? " " + code : ""}`);
+  if (btn) { btn.disabled = false; btn.textContent = "Uji"; }
+}
+
+async function probeAllEndpoints() {
+  const btn = $("probeAllBtn");
+  btn.disabled = true;
+  btn.textContent = "… menguji";
+  showErr("probeErr", null);
+  // Berurutan agar urutan status terbaca dan tidak membanjiri rate limit.
+  // CATATAN: querySelector harus menemukan TOMBOL di dalam baris, bukan
+  // barisnya sendiri — probeEndpoint mengganti btn.textContent, dan bila
+  // yang dikirim barisnya, seluruh isi baris (method/code/status/tombol)
+  // ikut terhapus dan diganti teks "…".
+  for (const ep of ENDPOINTS) {
+    const row = document.querySelector(`[data-ep-key="${ep.key}"]`);
+    const epBtn = row ? row.querySelector("button.ep-test") : null;
+    await probeEndpoint(ep, epBtn);
+  }
+  btn.disabled = false;
+  btn.textContent = "▶ Uji semua endpoint";
+}
+
+$("probeAllBtn").addEventListener("click", probeAllEndpoints);
+
+/* Muat otomatis saat halaman dibuka: health + ringkasan + audit dasar. */
+renderEndpointGrid();
+$("copyViewerClose").addEventListener("click", () => { $("copyViewer").hidden = true; });
+refreshHealth().then(() => {
+  // health adalah satu-satunya panggilan otomatis tanpa key — catat di grid.
+  setEndpointStatus("health", "ok", "HTTP 200 · dipanggil otomatis");
+  auditHealth(null); // diisi ulang oleh refreshHealth bila ada data
+  if (auditRows.length === 0) renderAudit();
+});
+refreshSummary();
+setInterval(refreshHealth, 30000);
+</script>
+</body>
+</html>

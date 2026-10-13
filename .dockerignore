@@ -1,0 +1,52 @@
+# .dockerignore — hanya konteks build yang masuk image.
+# Dockerfile memakai COPY eksplisit (bukan `COPY . .`), jadi berkas di bawah
+# ini pengaman kedua: mencegah konteks build membawa kredensial, cache, dan
+# dependency test ke image produksi.
+
+# --- Kredensial (WAJIB — jangan sampai ter-bake ke image) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.json
+
+# --- Kontrol versi & CI ---
+.git
+.gitignore
+.github
+.gitattributes
+
+# --- Artefak Python / venv (dependency sudah terpasang via pip) ---
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.venv
+venv
+env
+
+# --- Artefak model yang bisa diregenerasi ---
+# Runtime TIDAK memuat model.pkl (engine refit per request) — alasan yang sama
+# dengan .gitignore. Regenerasi: python scripts/export_model.py
+model/model.pkl
+
+# --- Editor / OS ---
+.vscode
+.idea
+*.swp
+Thumbs.db
+.DS_Store
+
+# --- Konten proyek yang bukan milik service ini ---
+# (README/markdown boleh ikut — kecil dan bermanfaat; data mentah di luar
+#  folder service sudah tidak terjangkau dari konteks build ini)
+Data-*
+*.nc
+*.zip
+
+# --- Notebooks & artefak riset ---
+.ipynb_checkpoints
+*.ipynb
