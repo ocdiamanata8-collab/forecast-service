@@ -52,7 +52,10 @@ def main() -> int:
     literal_re = re.compile(r'"v\d+\.\d+(\.\d+)?(-[\w.]+)?"')
     offenders: list[str] = []
     for path in sorted(ROOT.rglob("*.py")):
-        if path.name in {"version.py", "test_version.py"} or ".pytest_cache" in str(path):
+        # File test dikecualikan: boleh memuat literal semver palsu sebagai
+        # POLA DILARANG (mis. "v9.9.9-BOGUS" untuk menguji parser).
+        if path.name in {"version.py", "test_version.py", "test_env_keys.py"} \
+                or ".pytest_cache" in str(path):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         for match in literal_re.finditer(text):

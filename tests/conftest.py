@@ -23,6 +23,31 @@ os.environ.setdefault("API_KEYS", DEMO_KEY)
 
 
 @pytest.fixture(autouse=True)
+def restore_api_keys_state():
+    """Simpan & pulihkan API_KEYS + registry SEBELUM/SESUDAH setiap test.
+
+    Test env (`test_env_keys.py`) secara sah mengubah API_KEYS dan
+    mengosongkan registry untuk menguji perilaku parsing. Tanpa pemulihan
+    otomatis, test-setelahnya menerima 401/403 dan kegagalannya
+    menyesatkan — bukan schema yang rusak, melainkan kebocoran state.
+    """
+    import os as _os
+
+    from app.security import get_registry
+
+    saved_env = _os.environ.get("API_KEYS")
+    saved_keys = dict(get_registry().keys)
+    yield
+    if saved_env is None:
+        _os.environ.pop("API_KEYS", None)
+    else:
+        _os.environ["API_KEYS"] = saved_env
+    registry = get_registry()
+    registry.keys.clear()
+    registry.keys.update(saved_keys)
+
+
+@pytest.fixture(autouse=True)
 def reset_rate_limiter():
     """Bersihkan penghitung rate limit SEBELUM setiap test.
 

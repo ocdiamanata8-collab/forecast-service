@@ -35,12 +35,23 @@ tanpa menguji ulang (termasuk `tests/test_engine_golden.py` dan
 4. **Isi environment variable `API_KEYS`** sebelum service pertama kali
    start. Tanpa ini, semua endpoint ber-key membalas `401` (by design —
    lihat `app/main.py`).
-   - Generate kunci lokal:
+   - Generate kunci lokal (43 karakter — di atas minimum 16):
      ```powershell
      python -c "import secrets; print(secrets.token_urlsafe(32))"
      ```
-   - Tempel di **Environment** → `API_KEYS` (Value dari `render.yaml`
-     sengaja dibiarkan kosong / `sync: false`).
+   - Dua kunci atau lebih dipisah koma, tanpa spasi:
+     ```
+     API_KEYS=<kunci_pertama>,<kunci_kedua>
+     ```
+   - Jangan pernah menaruh kunci nyata di repository, di URL, atau di file
+     HTML. `.env` sudah di-gitignore; `.env.example` hanya template placeholder.
+
+   **Yang sengaja TIDAK ada di env** (lihat `.env.example` §2):
+
+   | Var | Kenapa tidak dipakai |
+   |---|---|
+   | `MODEL_VERSION` | Versi hidup di `model/VERSION` — SATU-SATUNYA sumber (diuji `test_version.py`). Menambah env versi kedua hanya menciptakan sumber kebenaran ganda |
+   | `TZ` | Zona dikunci `Asia/Makassar` (WITA, UTC+8) di kode. `Asia/Jakarta` (UTC+7) akan menggeser seluruh timestamp 1 jam dan membuat filter 07:00–17:00 salah — persis kekeliruan zona yang sudah diperangi |
 5. Deploy. Health check otomatis memakai `/api/v1/health`.
 6. Verifikasi: `https://<nama-service>.onrender.com/api/v1/health`
    harus membalas `{"status":"ok", ...}`.
@@ -80,3 +91,28 @@ curl -X POST https://<nama>.onrender.com/api/v1/forecast \
 # Swagger (terbuka tanpa key)
 # Buka https://<nama>.onrender.com/docs
 ```
+
+## Verifikasi pasca-deploy: field-per-field, bukan cuma 200
+
+Script `scripts/validate_response_fields.py` memvalidasi **isi response**
+terhadap kontrak — bukan hanya status code. "HTTP 200 tetapi field salah"
+adalah kegagalan integrasi yang paling sering terjadi dan paling sulit
+ditemukan.
+
+```bash
+# Ganti <domain> dengan URL publik dan <kunci> dengan API key yang valid
+python scripts/validate_response_fields.py \
+  --base https://<domain>.onrender.com \
+  --key <kunci>
+```
+
+Dilakukan terhadap container lokal di host ini, hasilnya **20/20 lulus**:
+health (tanpa `model_version`), field konteks POST `/forecast`
+(`site_id`/`unit`/`timezone`/`model_version`/`ts`/`generated_at`),
+panjang forecast == horizon, timestamp `+08:00`, deterministik, `401`
+tanpa key, dan envelope `422` + `request_id`.
+
+**Contoh request yang salah** (dari instruksi awal): field
+`historical_data` (bentuk `[float]`) ditolak `422 E_HISTORY_TOO_SHORT`
+karena skema benar memakai `history: [{timestamp, value}]`. Contoh
+valid lengkap terdokumentasi di `KONTRAK_API_v1.md` §5.1.

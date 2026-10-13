@@ -26,7 +26,7 @@ STDLIB = {
     "abc", "argparse", "base64", "builtins", "contextlib", "dataclasses",
     "datetime", "functools", "io", "json", "math", "os", "pathlib", "pickle",
     "re", "secrets", "shutil", "sys", "tempfile", "threading", "time",
-    "typing", "uuid", "warnings",
+    "typing", "urllib", "uuid", "warnings",
     "zoneinfo", "__future__",
 }
 
