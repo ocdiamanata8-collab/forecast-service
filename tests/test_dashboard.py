@@ -13,11 +13,16 @@ B. Halaman TIDAK menyembunyikan logika/data di dirinya (kalau ya, ia tidak
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# Mode script tidak memuat conftest — matikan scheduler supaya state test
+# deterministik (store kosong; ARIMA fit tidak jalan tiap TestClient).
+os.environ.setdefault("SCHEDULER_ENABLED", "false")
 
 from fastapi.testclient import TestClient  # noqa: E402
 

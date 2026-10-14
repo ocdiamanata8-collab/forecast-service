@@ -19,6 +19,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# Mode script tidak memuat conftest — matikan scheduler supaya startup tidak
+# menjalankan ARIMA fit (state test = store kosong).
+os.environ.setdefault("SCHEDULER_ENABLED", "false")
+
 from app.main import create_app  # noqa: E402
 from app.security import get_registry, get_limiter  # noqa: E402
 from app.version import model_version  # noqa: E402

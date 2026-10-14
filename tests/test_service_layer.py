@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # di app/main.py). conftest.py hanya menangani mode pytest; script mode
 # perlu mengaturnya sendiri.
 os.environ.setdefault("API_KEYS", DEMO_KEY)
+os.environ.setdefault("SCHEDULER_ENABLED", "false")  # state test deterministik
 
 
 def check(condition: bool, label: str) -> None:

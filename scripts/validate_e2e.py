@@ -302,9 +302,16 @@ def main() -> int:
 
     r = client.get("/api/v1/forecast/latest", params={"site_id": "PLTS_KUPANG"}, headers=H)
     e = r.json().get("error", {})
-    check("site valid tanpa forecast = 404 E_NO_FORECAST (berbeda dari di atas)",
-          r.status_code == 404 and e.get("code") == "E_NO_FORECAST",
+    check("site valid + scheduler aktif = 200 dengan forecast tersimpan (bukan E_NO_FORECAST)",
+          r.status_code == 200 and e.get("code") != "E_NO_FORECAST",
           f"{r.status_code} {e.get('code')}")
+    if r.status_code == 200:
+        latest = r.json()
+        check("latest membawa forecast_id + konteks (kontrak §5.2)",
+              {"forecast_id", "site_id", "generated_at", "unit", "model_version",
+               "forecast"} <= set(latest), str(sorted(latest)))
+        check("latest forecast_id dari scheduler (UUID, bukan null)",
+              bool(latest.get("forecast_id")), str(latest.get("forecast_id")))
 
     # ------------------------------------------------------------------
     # 10. History pagination (§5.3)
@@ -315,8 +322,17 @@ def main() -> int:
           str(list(r.json())))
     pg = r.json()["page"]
     check("page punya limit+has_more", {"limit", "has_more"} <= set(pg), str(pg))
-    check("tanpa data: has_more=False & next_cursor hilang (bukan null)",
-          pg["has_more"] is False and "next_cursor" not in pg, str(pg))
+    # Dengan scheduler aktif, history minimal berisi satu entri (tick startup);
+    # has_more/next_cursor mengikuti jumlah entri vs limit. Toleran keduanya.
+    items = r.json().get("items", [])
+    check("history berisi >= 1 entri scheduler (kontrak §8)",
+          isinstance(items, list) and len(items) >= 1, f"{len(items)} items")
+    if pg["has_more"]:
+        check("has_more=True -> next_cursor terisi", bool(pg.get("next_cursor")),
+              str(pg.get("next_cursor")))
+    else:
+        check("has_more=False -> next_cursor hilang (bukan null)",
+              "next_cursor" not in pg, str(pg))
 
     r = client.get("/api/v1/forecast/history",
                    params={"site_id": "PLTS_KUPANG", "cursor": "rusak"}, headers=H)

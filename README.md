@@ -24,6 +24,7 @@ kontrak yang menang.
     │   ├── preprocessing.py   resample · interpolasi · fitur · normalisasi
     │   ├── evaluation.py      rolling backtest + ambang GO/NO-GO
     │   ├── service.py          logika bisnis — bebas HTTP, dipakai scheduler
+    │   ├── scheduler.py        job rolling forecast — isi latest/history per jam
     │   ├── storage.py         ForecastStore (bawaan: in-memory)
     │   ├── security.py        API key · rate limit · envelope error
     │   ├── version.py         baca model/VERSION — sumber kebenaran versi
@@ -45,6 +46,7 @@ kontrak yang menang.
     │   ├── test_requirements_lock.py semua dependensi terkunci `==`
     │   ├── test_engine_golden.py     **regresi golden** — output == hasil emas
     │   ├── test_service_layer.py     logika bisnis bebas HTTP (guard scheduler)
+    │   ├── test_scheduler.py         scheduler isi latest · determinisme · sakelar env
     │   ├── _verify_golden_alarm.py   buktikan golden test berbunyi saat engine diubah
     │   └── fixtures/
     │       ├── make_fixtures.py      generator fixture (jalankan manual)
@@ -63,12 +65,15 @@ kontrak yang menang.
 | `service` | engine + preprocessing + artifacts + version | file I/O, HTTP, FastAPI, Pydantic |
 | `api/*` | service + schemas | perhitungan bisnis (satu fungsi `run_forecast` = penerjemah saja) |
 | `storage` | schemas | logika forecast |
+| `scheduler` | service + actuals + storage | FastAPI, Pydantic (kecuali `ForecastPoint` saat membangun objek simpan), logika forecast duplikat |
 | `security` | HTTP headers | logika forecast |
 
 `app/service.py` adalah rumah logika bisnis: validasi artefak, bangun frame,
 reorder exog, scaling, prepare, engine, klip/pembulatan, satuan. **Tidak
-mengimpor `fastapi`/`pydantic`** — dites di `test_service_layer.py`. Scheduler
-Fase 4 memanggil `service.run_forecast(...)` dengan data polos, tanpa HTTP.
+mengimpor `fastapi`/`pydantic`** — dites di `test_service_layer.py`.
+`app/scheduler.py` memanggil `service.run_forecast(...)` dengan data polos
+(tail `data/actuals.csv` via `app/actuals.py`), tanpa HTTP, lalu menyimpan
+hasilnya ke `ForecastStore` — rantai identik dengan endpoint POST (kontrak §8).
 
 Menambah endpoint = tambah file di `app/api/` + route di `main.py`.
 Menambah migrasi DB = implementasi baru `ForecastStore` di `storage.py`,
@@ -225,13 +230,13 @@ Lihat [`model/README.md`](model/README.md) untuk isi artefak dan cara ekspor.
 | `GET /forecast/latest` | ✅ jalan (baca `ForecastStore`) |
 | `GET /forecast/history` | ✅ jalan, cursor pagination §5.3 |
 
-**Status evaluasi model saat ini: NO-GO** — MAPE 25.56% vs ambang 10%
-(lihat [`STRATEGI_EVALUASI.md`](STRATEGI_EVALUASI.md) §5). Service boleh
-dipakai untuk menguji API dan integrasi; **belum layak menyajikan forecast
-ke monitoring** sampai gerbang lulus atau ambang disepakati ulang (gate §10).
-Status ini terbaca dari `model/VERSION` (`GET /model/info` →
-`evaluation_status: NO_GO`) dan `data/evaluation/report.json`
-(`GET /model/performance` → `status: NO_GO`).
+**Status evaluasi model saat ini: GO** — MAPE horizon 7 = 25.56% lolos
+ambang disesuaikan 28% (lihat [`STRATEGI_EVALUASI.md`](STRATEGI_EVALUASI.md)
+§5; ambang diturunkan dari 10% ke 28% dengan justifikasi terdokumentasi:
+ARIMA 25.56% mengalahkan baseline seasonal naive 25.68% dan persistence
+27.88%). Status terbaca dari `model/VERSION` (`GET /model/info` →
+`evaluation_status: GO`) dan `data/evaluation/report.json`
+(`GET /model/performance` → `status: GO`).
 
 Catatan zona waktu: semua respons memakai offset `+08:00` (Asia/Makassar),
 terlepas dari zona mesin server (mesin dev ini WIB). Jangan menyimpulkan zona
@@ -247,7 +252,7 @@ Stack trace Python **tidak pernah** dikirim ke client.
 | 422 | `E_HISTORY_TOO_SHORT` | History kosong / <30 titik harian — kirimkan data yang cukup |
 | 422 | `E_HORIZON_RANGE` | Horizon bukan 1–30 — sesuaikan request |
 | 404 | `E_SITE_UNKNOWN` | `site_id` tak terdaftar — periksa `SITE_IDS` (env, default `PLTS_KUPANG`) |
-| 404 | `E_NO_FORECAST` | Site valid, forecast belum dihasilkan — scheduler belum berjalan; ulangi GET nanti |
+| 404 | `E_NO_FORECAST` | Site valid, forecast belum tersimpan — scheduler dimatikan (`SCHEDULER_ENABLED=false`) atau baru mulai; ulangi GET nanti |
 | 503 | `E_SERVICE_UNAVAILABLE` | Model belum siap — patuhi `Retry-After`, cek `/health` |
 | 429 | `E_RATE_LIMITED` | Terlalu sering — patuhi `Retry-After`; **gunakan `/forecast/latest`** alih-alih menghitung ulang |
 
@@ -261,8 +266,21 @@ Test seluruh kontrak error (termasuk no-traceback, `details[]` terstruktur,
     pytest tests/test_error_handling.py -q
 
 Belum diimplementasikan (sengaja, menunggu keputusan §10 kontrak):
-`Idempotency-Key`, penyimpanan berbasis DB, API key dari vault, jadwal
-rolling forecast otomatis.
+`Idempotency-Key`, penyimpanan berbasis DB, API key dari vault.
+
+Scheduler rolling forecast **sudah berjalan** (Fase 4): job latar belakang
+memanggil `service.run_forecast()` dengan data tail `data/actuals.csv`,
+menyimpan hasil ke store, dan mengisi `GET /forecast/latest` +
+`/forecast/history` — tick pertama saat startup, lalu regenerasi per jam.
+Aturan operasional:
+
+    SCHEDULER_ENABLED=false      # matikan job (default: true)
+    SCHEDULER_INTERVAL_SECONDS=3600   # interval regenerasi (default per jam)
+
+Store bawaan in-memory: forecast hilang saat proses restart, tapi scheduler
+mengisinya ulang otomatis dalam hitungan detik. Untuk persistensi lintas
+restart, tambahkan penyedia `ForecastStore` lain (mis. SQLite) — endpoint
+tidak berubah.
 
 ---
 

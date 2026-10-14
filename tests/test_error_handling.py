@@ -34,6 +34,10 @@ DEMO_KEY = "dev-key-change-me-0123456789"
 # di app/main.py). conftest.py hanya menangani mode pytest; script mode
 # perlu mengaturnya sendiri.
 os.environ.setdefault("API_KEYS", DEMO_KEY)
+# Mode script tidak memuat conftest — matikan scheduler agar store tetap
+# kosong (default test: latest = 404 E_NO_FORECAST). Lihat tests/test_scheduler.py
+# untuk versi scheduler yang sengaja diaktifkan.
+os.environ.setdefault("SCHEDULER_ENABLED", "false")
 K = {"X-API-Key": DEMO_KEY}
 SITE = "PLTS_KUPANG"
 

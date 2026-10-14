@@ -41,6 +41,7 @@ DEMO_KEY = "dev-key-change-me-0123456789"
 # di app/main.py). conftest.py hanya menangani mode pytest; script mode
 # perlu mengaturnya sendiri.
 os.environ.setdefault("API_KEYS", DEMO_KEY)
+os.environ.setdefault("SCHEDULER_ENABLED", "false")  # state test deterministik
 
 from app import artifacts as art  # noqa: E402
 from app import engine  # noqa: E402

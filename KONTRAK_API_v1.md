@@ -670,7 +670,7 @@ menjadi breaking change nanti.
 | 10.2 | Sumber `power_history` | Opsi A (kWh harian) / B (kW turunan) / C (data inverter) — spesifikasi §4.2 | Menentukan `target` mana yang aktif dan unit final |
 | 10.3 | Kalibrasi irradiance → energi | Faktor `kapasitas × PR` — spesifikasi §4.4 | Prasyarat mengaktifkan `energy_kwh`/`power_kw` |
 | 10.4 | Zona waktu | **`Asia/Makassar`** — sudah diverifikasi dari lokasi PLTS (spesifikasi §4.1) | Mengganti zona setelah freeze = breaking |
-| 10.5 | Retensi & jadwal scheduler | Berapa lama `history` disimpan; interval regenerasi `latest` | Memengaruhi SLA `generated_at` yang dipantau monitoring |
+| 10.5 | Retensi & jadwal scheduler | Jadwal **sudah diimplementasikan** (Fase 4): regenerasi per jam (3600s), tick pertama saat startup, env `SCHEDULER_ENABLED`/`SCHEDULER_INTERVAL_SECONDS`; history mengikuti store in-memory (hilang saat restart). Retensi berbasis DB masih terbuka | Memengaruhi SLA `generated_at` yang dipantau monitoring |
 | 10.6 | Rate limit & key management | 60 req/menit (§1.3) — disetujui konsumen? | Angka rate limit dinaikkan = non-breaking; diturunkan = breaking |
 
 **Checklist freeze:**
@@ -691,6 +691,7 @@ menjadi breaking change nanti.
 
 | Versi | Tanggal | Perubahan |
 |---|---|---|
+| v1.0.0-draft | 2026-10-14 | **Scheduler latar belakang (Fase 4) diimplementasikan** — §5.1 menyatakan penyimpanan ada di scheduler; kini job itu ada (`app/scheduler.py`): tick pertama saat startup lalu regenerasi per jam (§1.4 / SLA §5.2), memanggil rantai **identik** `service.run_forecast` (§8), history dari tail `data/actuals.csv`. **Gate §10.5** diperbarui: interval sudah diputuskan (3600s; env `SCHEDULER_ENABLED`, `SCHEDULER_INTERVAL_SECONDS`); retensi lintas-restart masih terbuka. Perilaku kontrak tidak berubah — `GET /forecast/latest` kini benar-benar terisi 200 setelah startup (sebelumnya selalu 404 `E_NO_FORECAST` karena scheduler belum pernah dibangun). Tidak ada perubahan field/kode; **non-breaking** (§9.2). |
 | v1.0.0-draft | 2026-10-12 | **§5.5 `evaluated_at` dikoreksi**: kini memakai `generated_at` laporan backtest (waktu asli pembuatan), bukan `site_now()` (waktu request) — sebelumnya membuat "run terakhir" selalu tampak baru tiap request. Nilai `null` bila belum pernah dievaluasi. **Tambah `data_rows`** (§5.5) = `n_rows` laporan, dibedakan dari `n_samples`. **§5.4 tambah `training_rows`** dari `model/artifacts.json`. Semua penambahan field = **non-breaking** (§9.2); koreksi `evaluated_at` = perbaikan kontrak menuju spesifikasi §1.5 (respons sebelumnya bisa mengirim timestamp naive dari laporan lama — parser kini melokalisasi eksplisit ke zona site). |
 | v1.0.0-draft | 2026-10-08 | Tambah `GET /api/v1/forecast/actual` §5.7 sebagai endpoint additive/non-breaking (§9.2): actual W/m2 per titik, timestamp strict, empty range = 200 `points:[]`; data disajikan melalui API, bukan browser CSV. Kode error §6.1 `E_TZ_REQUIRED`/`E_TIME_RANGE_INVALID`/`E_SITE_UNKNOWN`/`E_SERVICE_UNAVAILABLE` diperluas ke actual. |
 | v1.0.0-draft | 2026-10-02 | **Sumber kebenaran versi: `model/VERSION` (baris pertama), dibaca `app/version.py`; tidak ada literal versi di kode.** Skema semver dilonggarkan ke `^v\d+\.\d+(\.\d+)?$` agar `v1.0` dari file itu diterima — **non-breaking** (§9.2, melebarkan yang diterima) |

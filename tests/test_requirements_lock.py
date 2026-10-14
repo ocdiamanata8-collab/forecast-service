@@ -23,10 +23,10 @@ FAILURES: list[str] = []
 
 #: Modul standar Python yang tidak perlu ada di requirements.
 STDLIB = {
-    "abc", "argparse", "base64", "builtins", "contextlib", "dataclasses",
-    "datetime", "functools", "io", "json", "math", "os", "pathlib", "pickle",
-    "re", "secrets", "shutil", "sys", "tempfile", "threading", "time",
-    "typing", "urllib", "uuid", "warnings",
+    "abc", "argparse", "asyncio", "base64", "builtins", "contextlib",
+    "dataclasses", "datetime", "functools", "io", "json", "logging", "math",
+    "os", "pathlib", "pickle", "re", "secrets", "shutil", "sys", "tempfile",
+    "threading", "time", "typing", "urllib", "uuid", "warnings",
     "zoneinfo", "__future__",
 }
 

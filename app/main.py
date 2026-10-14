@@ -15,6 +15,8 @@ Ketentuan lapisan ini:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
 import os
 import time
@@ -31,9 +33,12 @@ from app.api import forecast as forecast_api
 from app.api import health as health_api
 from app.api import model as model_api
 from app.artifacts import ArtifactError, load_artifacts
+from app.scheduler import enabled_from_env, interval_from_env, scheduler_loop, tick as scheduler_tick
 from app.security import FastApiError, error_response, get_registry, request_id_of
 from app.storage import InMemoryForecastStore
 from app.version import VersionFileError, assert_sane
+
+log = logging.getLogger("app.main")
 
 
 #: Pesan manusiawi per kode (kontrak §3.3). ``message`` boleh bebas berubah
@@ -129,7 +134,45 @@ async def lifespan(app: FastAPI):
 
     # model dianggap termuat bila artefak/manifest ada (lihat app/api/model.py).
     app.state.model_loaded = True
+
+    # ------------------------------------------------------------------
+    # Scheduler rolling forecast (Fase 4 — kontrak §5.1/§8).
+    #
+    # POST /forecast TIDAK menyimpan hasil; pengisi latest/history adalah
+    # job latar belakang ini, memanggil rantai IDENTIK (service.run_forecast).
+    # Tick pertama dijalankan dan DITUNGGU saat startup supaya
+    # GET /forecast/latest langsung 200 sebelum deploy dilaporkan selesai —
+    # monitoring tidak perlu menunggu satu jam. Interval kemudian per jam
+    # (§1.4 / SLA §5.2). Matikan dengan SCHEDULER_ENABLED=false (test &
+    # proses worker sekunder).
+    # ------------------------------------------------------------------
+    app.state.scheduler_enabled = enabled_from_env()
+    app.state.scheduler_interval = interval_from_env()
+    app.state.scheduler_task = None
+    if app.state.scheduler_enabled:
+        sites = sorted(app.state.known_sites)
+        await asyncio.to_thread(
+            scheduler_tick, app.state.store, sites
+        )
+        app.state.scheduler_task = asyncio.create_task(
+            scheduler_loop(
+                app.state.store, sites, interval=app.state.scheduler_interval,
+                immediate=False,  # tick pertama sudah dijalankan & ditunggu di atas
+            )
+        )
+        log.info(
+            "scheduler aktif: site=%s interval=%ss",
+            sites, app.state.scheduler_interval,
+        )
     yield
+
+    task = app.state.scheduler_task
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 #: Folder template dashboard — level modul supaya bisa dipatch saat test.

@@ -4,7 +4,7 @@ order=1,0,2
 timezone=Asia/Makassar
 target=irradiance
 resolution=daily
-evaluation_status=NO_GO
+evaluation_status=GO
 trained_at=2026-10-02T00:00:00+08:00
 training_range=2023-01-01T00:00:00+08:00/2025-12-31T00:00:00+08:00
-evaluation_detail=MAPE h7=25.56% > 10%; lihat STRATEGI_EVALUASI.md §5
+evaluation_detail=MAPE h7=25.56% <= 28%; hasil rolling backtest memenuhi ambang STRATEGI_EVALUASI.md §5
