@@ -36,6 +36,7 @@ kontrak yang menang.
     │   ├── test_health.py            **health** — enum, no-key, gerbang deploy
     │   ├── test_error_handling.py    422/404/503/429 eksplisit, tanpa traceback
     │   ├── test_api_contract.py      21 pemeriksaan kontrak HTTP
+    │   ├── test_contract_fields.py   **pengaman kontrak** — nama field tiap endpoint dikunci
     │   ├── test_forecast_engine.py   determinisme engine
     │   ├── test_preprocessing.py     preprocessing & integrasi
     │   ├── test_timezone_contract.py aturan zona tunggal
