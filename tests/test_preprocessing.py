@@ -16,6 +16,14 @@ import io
 import sys
 from pathlib import Path
 
+# Console Windows default cp1252 tidak bisa mencetak simbol Unicode pada
+# label test (≠, Δ). Samakan dengan UTF-8; tidak mengubah logic test.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, OSError, ValueError):
+    pass
+
 import numpy as np
 import pandas as pd
 

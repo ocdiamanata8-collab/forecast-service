@@ -29,6 +29,15 @@ import sys
 import warnings
 from pathlib import Path
 
+# Console Windows default cp1252 tidak bisa mencetak simbol Unicode pada
+# label test (Δ, ≠). Samakan dengan UTF-8; tidak mengubah logic test.
+# Pola ini konsisten di semua test yang memakai simbol non-ASCII.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, OSError, ValueError):
+    pass
+
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.arima.model import ARIMA

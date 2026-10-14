@@ -23,6 +23,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Console Windows default cp1252 tidak bisa mencetak simbol Delta/arrow yang
+# dipakai label test. Paksa UTF-8 (pola yang sama dengan validate_response_fields).
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except (AttributeError, OSError, ValueError):
+    pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np  # noqa: E402

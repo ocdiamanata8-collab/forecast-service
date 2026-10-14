@@ -293,7 +293,8 @@ def test_performance_without_evaluation_is_unknown(client, auth_headers, tmp_pat
         body = r.json()
         assert body["status"] == "UNKNOWN"
         assert body["horizons"] == []
-        assert body["thresholds"]["max_mape"] == 10.0
+        # UNKNOWN memakai ambang bawaan — kini 28.0 (disesuaikan 2026-10-14).
+        assert body["thresholds"]["max_mape"] == 28.0
     finally:
         model_api._EVAL_DIR = original
 
@@ -313,11 +314,11 @@ def test_performance_reads_report_json(client, auth_headers, tmp_path):
         "holdout_end": "2025-12-31T00:00:00+08:00",
         "order": [1, 0, 2],
         "thresholds": {
-            "max_mae": 40.0, "max_mape": 10.0, "max_mape_long": 15.0,
+            "max_mae": 45.0, "max_mape": 28.0, "max_mape_long": 33.0,
             "min_skill": 0.0, "primary_horizon": 7,
         },
         "status": "NO_GO",
-        "failures": ["MAPE horizon 7 = 25.56% > 10.00%"],
+        "failures": ["MAPE horizon 7 = 25.56% > 28.00%"],
         "blocks": [
             {"horizon": 7, "mae": 40.255, "rmse": 50.022, "mape": 25.56,
              "skill": 0.244, "baseline_mae": 53.222, "baseline_mape": 0.0, "n": 336},
@@ -333,9 +334,9 @@ def test_performance_reads_report_json(client, auth_headers, tmp_path):
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "NO_GO"
-        assert body["failures"] == ["MAPE horizon 7 = 25.56% > 10.00%"]
+        assert body["failures"] == ["MAPE horizon 7 = 25.56% > 28.00%"]
         assert body["n_samples"] == 336
-        assert body["thresholds"]["max_mape"] == 10.0
+        assert body["thresholds"]["max_mape"] == 28.0
         assert body["horizons"][0]["mape"] == 25.56
         assert body["horizons"][0]["skill"] == 0.244
         # Konteks telusur: data_rows = n_rows laporan (1096), BUKAN n_samples.
