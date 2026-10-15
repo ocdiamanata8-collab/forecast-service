@@ -30,7 +30,8 @@ kontrak yang menang.
     │   ├── version.py         baca model/VERSION — sumber kebenaran versi
     │   └── artifacts.py       baca model/artifacts.json — urutan fitur & skala
     ├── model/                  VERSION · artifacts.json · model.pkl
-    ├── templates/ static/     placeholder UI (belum dipakai)
+    ├── templates/             dashboard engineer (GET / — konsumen API)
+    ├── static/                adapter konsumen monitoring (GET /static/…)
     ├── tests/
     │   ├── conftest.py               fixture pytest (client, API key)
     │   ├── test_health.py            **health** — enum, no-key, gerbang deploy
@@ -48,6 +49,7 @@ kontrak yang menang.
     │   ├── test_engine_golden.py     **regresi golden** — output == hasil emas
     │   ├── test_service_layer.py     logika bisnis bebas HTTP (guard scheduler)
     │   ├── test_scheduler.py         scheduler isi latest · determinisme · sakelar env
+    │   ├── test_adapter.py           adapter monitoring: serve · perilaku Node · guard dashboard
     │   ├── _verify_golden_alarm.py   buktikan golden test berbunyi saat engine diubah
     │   └── fixtures/
     │       ├── make_fixtures.py      generator fixture (jalankan manual)
@@ -149,10 +151,45 @@ Verifikasi image di terminal lain:
     curl http://127.0.0.1:8000/api/v1/health
     curl http://127.0.0.1:8000/
 
-Dockerfile menyalin secara eksplisit `app/`, `model/`, `templates/`, `data/`,
-`scripts/` — termasuk file runtime `data/actuals.csv` dan `data/evaluation/report.json`.
-Jangan mengganti ke `COPY . .` tanpa `.dockerignore`; konteks build tak boleh
-membawa `.env`, `.git`, cache, atau data mentah ke image.
+Dockerfile menyalin secara eksplisit `app/`, `model/`, `templates/`, `static/`,
+`data/`, `scripts/` — termasuk adapter `static/monitoring-adapter.js` yang
+diserve di `/static/monitoring-adapter.js`. Jangan mengganti ke `COPY . .`
+tanpa `.dockerignore`; konteks build tak boleh membawa `.env`, `.git`, cache,
+atau data mentah ke image.
+
+---
+
+## Adapter sisi platform monitoring (satu titik adaptasi kontrak)
+
+Platform monitoring menerjemahkan response API (`forecast_value`,
+`generated_at`, `horizons[]`, dsb.) ke model internal lewat **satu berkas**:
+[`static/monitoring-adapter.js`](static/monitoring-adapter.js). Berkas ini
+adapter ESM murni (tanpa API key, tanpa fetch, zero dependencies) dengan
+fungsi `toForecast`, `toActualSeries`, `toPerformance`, `toModelInfo`,
+`toHealth`, `toHistory`, dan `toError`.
+
+Contoh pemakaian di platform web:
+
+```js
+import { toForecast, toPerformance } from "/static/monitoring-adapter.js";
+const forecast = toForecast(await forecastResponse.json());
+// forecast.points → [{ when: "2026-01-01T00:00:00+08:00", value: 222.295 }, …]
+const performance = toPerformance(await performanceResponse.json());
+// performance.primary → { days: 7, mae: 40.255, mape: 25.56, … }
+```
+
+**Jika nama field kontrak berubah**, ubah pemetaan di berkas adapter ini —
+bukan setiap komponen dashboard. Adapter defensif (field hilang → `null`/`[]`,
+tidak melempar) supaya drift tidak menjatuhkan monitoring; deteksi drift
+kontrak tetap melalui audit respons mentah di dashboard dan
+`tests/test_contract_fields.py`. Dashboard engineer repo ini juga
+menggunakan adapter untuk rendering; audit + panel "Salin JSON" tetap membaca
+respons server mentah (sumber kebenaran, tidak disaring).
+
+Tes perilaku adapter memakai Node bila tersedia (di CI tanpa Node di-skip);
+test `/static/monitoring-adapter.js` memastikan file memang ter-serve dan ikut
+image Docker.
+
 
 Jika Docker tidak terpasang, pemeriksaan build-context non-Docker tetap tersedia:
 

@@ -37,6 +37,8 @@ RUN useradd --create-home --shell /usr/sbin/nologin app
 #   model/VERSION           sumber kebenaran versi (wajib — startup menagihnya)
 #   model/artifacts.json    urutan fitur & skala (wajib — API tidak menebak)
 #   templates/              dashboard engineer di GET /  (wajib)
+#   static/                 adapter konsumen monitoring di GET /static/ (wajib —
+#                           tanpa ini dashboard gagal import ESM dan 404)
 #   data/actuals.csv        data aktual per titik (wajib — /forecast/actual)
 #   data/evaluation/…       laporan backtest untuk /model/performance (opsional,
 #                           diikutkan bila ada agar status evaluasi tampil)
@@ -46,12 +48,14 @@ RUN useradd --create-home --shell /usr/sbin/nologin app
 # sama dengan .gitignore): runtime TIDAK pernah memuatnya, engine refit per
 # request. Regenerasi bila perlu:  python scripts/export_model.py
 #
-# templates/ dan data/ MASING-MASING PERNAH terlewat — akibatnya GET / 404 dan
-# /forecast/actual 503. Jangan hapus baris COPY di bawah tanpa membaca
-# app/main.py, app/actuals.py, app/api/model.py.
+# templates/, data/ dan static/ MASING-MASING PERNAH terlewat — akibatnya
+# GET / 404, /forecast/actual 503, atau adapter tidak bisa dimuat. Jangan
+# hapus baris COPY di bawah tanpa membaca app/main.py, app/actuals.py,
+# app/api/model.py, dan app/main.py (mount /static).
 COPY --chown=app:app app/ ./app/
 COPY --chown=app:app model/ ./model/
 COPY --chown=app:app templates/ ./templates/
+COPY --chown=app:app static/ ./static/
 COPY --chown=app:app data/ ./data/
 COPY --chown=app:app scripts/ ./scripts/
 

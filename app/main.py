@@ -27,6 +27,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import forecast as forecast_api
@@ -225,6 +226,11 @@ def create_app() -> FastAPI:
     app.include_router(forecast_api.router)
     app.include_router(model_api.router)
     app.include_router(health_api.router)
+
+    # Adapter sisi konsumen monitoring (format internal <- kontrak API).
+    # File murni JS, tanpa route/OpenAPI baru untuk endpoint data.
+    static_dir = Path(__file__).resolve().parent.parent / "static"
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
     # ---------------------------------------------------------------------------
     # GET / — halaman dashboard engineer.

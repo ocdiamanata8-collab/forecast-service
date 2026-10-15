@@ -59,6 +59,7 @@ def runtime_paths() -> list[tuple[str, str]]:
         ("model/VERSION", "app/version.py"),
         ("model/artifacts.json", "app/artifacts.py"),
         ("templates/index.html", "app/main.py"),
+        ("static/monitoring-adapter.js", "app/main.py (mount /static; dashboard & monitoring import)"),
         ("data/actuals.csv", "app/actuals.py"),
         ("data/evaluation/report.json", "app/api/model.py"),
         ("requirements.txt", "Dockerfile (pip install)"),

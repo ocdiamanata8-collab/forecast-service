@@ -428,11 +428,24 @@
 
 </main>
 
-<script>
+<script type="module">
 "use strict";
 
 /* Konsumen API murni: semua data dari fetch(/api/v1/...). Tidak ada logika
-   forecast dan tidak ada data forecast yang dibakar di halaman ini. */
+   forecast dan tidak ada data forecast yang dibakar di halaman ini.
+
+   ADAPTER (import di bawah): jalur RENDERING membaca hasil terjemahan dari
+   /static/monitoring-adapter.js — renama field kontrak kelak hanya menyentuh
+   berkas itu. AUDIT + panel JSON mentah sengaja tetap membaca respons asli
+   (r.data) itulah detektor drift; menyaringnya lewat adapter akan membutakan
+   deteksi. */
+import {
+  toForecast,
+  toActualSeries,
+  toPerformance,
+  toModelInfo,
+  toHealth,
+} from "/static/monitoring-adapter.js";
 
 const CTX_FIELDS = ["site_id", "generated_at", "unit", "model_version"];
 const VALID_HEALTH_STATUS = ["ok", "degraded", "unavailable"];
@@ -484,14 +497,15 @@ function showErr(id, r) {
 }
 
 function renderForecastTable(tableId, points) {
+  // points = model internal adapter: [{when, value, modelVersion}]
   const tb = $(tableId), tbody = tb.querySelector("tbody");
   tbody.innerHTML = "";
   for (const [i, p] of points.entries()) {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${i + 1}</td><td></td><td class="num"></td><td></td>`;
-    tr.cells[1].textContent = p.forecast_time;
-    tr.cells[2].textContent = Number(p.forecast_value).toFixed(3);
-    tr.cells[3].textContent = p.model_version;
+    tr.cells[1].textContent = p.when ?? "–";
+    tr.cells[2].textContent = p.value == null ? "–" : p.value.toFixed(3);
+    tr.cells[3].textContent = p.modelVersion ?? "–";
     tbody.appendChild(tr);
   }
   tb.hidden = points.length === 0;
@@ -671,23 +685,22 @@ async function runManual() {
   showErr("runErr", r);
 
   if (r.status === 200 && r.data) {
+    const forecast = toForecast(r.data); // internal model; audit/raw tetap pakai r.data
     setPill("hRun", true, "200");
     $("runOk").hidden = false;
     $("runOk").textContent =
-      `Forecast dijalankan manual — site=${r.data.site_id} ` +
-      `horizon=${r.data.horizon} ${r.data.unit} · generated_at=${r.data.generated_at}` +
-      ` · model=${r.data.model_version}`;
-    renderForecastTable("runTable", r.data.forecast || []);
+      `Forecast dijalankan manual — site=${forecast.site} ` +
+      `horizon=${forecast.horizon} ${forecast.unit} · generated_at=${forecast.generatedAt}` +
+      ` · model=${forecast.modelVersion}`;
+    renderForecastTable("runTable", forecast.points);
     addLog("POST /forecast -> 200");
     auditForecastPayload(r.data);
     audit("site di request == site di respons", r.data.site_id === body.site_id,
           `${r.data.site_id}`);
     audit("horizon di request == horizon di respons", r.data.horizon === body.horizon,
           `${r.data.horizon}`);
-    // Grafik actual vs forecast: fetch data aktual dari API (bukan CSV),
-    // lalu gambar. Dipanggil SETELAH tabel & audit, agar table view selalu
-    // ada walau fetch actual gagal.
-    loadActualsAndDraw(r.data.forecast || [], body.site_id).catch(err => {
+    // Grafik aktual + forecast: data aktual juga lewat adapter sebelum rendering.
+    loadActualsAndDraw(forecast.points, body.site_id).catch(err => {
       showChartEmpty(`Data aktual gagal diambil: ${err.message}`);
       audit("actual API: diambil", false, err.message);
       renderAudit();
@@ -722,34 +735,34 @@ async function loadEvaluation() {
     setPill("hEval", false, String(r.status));
     return;
   }
-  const d = r.data;
+  const d = toPerformance(r.data); // rendering: model internal; audit tetap respons asli
   setPill("hEval", true, `200 · ${d.status}`);
 
   const table = $("evalTable"), tbody = table.querySelector("tbody");
   tbody.innerHTML = "";
-  for (const h of d.horizons || []) {
+  for (const h of d.horizons) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${h.horizon} hari</td>` +
+    tr.innerHTML = `<td>${h.days} hari</td>` +
       `<td class="num">${Number(h.mae).toFixed(3)}</td>` +
       `<td class="num">${Number(h.mape).toFixed(2)}</td>` +
       `<td class="num">${Number(h.rmse).toFixed(3)}</td>` +
       `<td class="num">${h.skill >= 0 ? "+" : ""}${Number(h.skill).toFixed(3)}</td>`;
     tbody.appendChild(tr);
   }
-  table.hidden = !(d.horizons || []).length;
+  table.hidden = !d.horizons.length;
 
   const chips = $("evalChips");
   chips.hidden = false;
   chips.innerHTML = "";
-  const primary = (d.thresholds && d.thresholds.primary_horizon) || 7;
+  const primary = d.thresholds.primaryHorizon;
   const facts = {
     "status": d.status,
-    "site_id": d.site_id,
+    "site_id": d.site,
     "unit": d.unit,
-    "model_version": d.model_version,
-    "holdout": d.evaluation_range ? `${d.evaluation_range.from.slice(0,10)} → ${d.evaluation_range.to.slice(0,10)}` : "–",
-    "n_samples": d.n_samples,
-    "ambang MAPE": `${d.thresholds.max_mape}%`,
+    "model_version": d.modelVersion,
+    "holdout": d.evaluationRange ? `${d.evaluationRange.from.slice(0,10)} → ${d.evaluationRange.to.slice(0,10)}` : "–",
+    "n_samples": d.nSamples,
+    "ambang MAPE": `${d.thresholds.maxMape}%`,
     "horizon utama": `${primary} hari`,
   };
   for (const [k, v] of Object.entries(facts)) {
@@ -788,9 +801,10 @@ async function loadLatest() {
   const r = await api(`/api/v1/forecast/latest?site_id=${encodeURIComponent(s)}`, { auth: true });
   showErr("fcErr", r);
   if (r.status === 200 && r.data) {
+    const forecast = toForecast(r.data);
     setPill("hLatest", true, "200");
-    renderContext(r.data);
-    renderForecastTable("fcTable", r.data.forecast || []);
+    renderContext(r.data); // chip = diagnostik nama kontrak → tetap respons asli
+    renderForecastTable("fcTable", forecast.points);
     addLog("GET /latest -> 200");
     auditForecastPayload(r.data);
     renderAudit();
@@ -834,20 +848,23 @@ async function loadModelInfo() {
   const box = $("infoChips");
   box.innerHTML = "";
   if (r.status !== 200 || !r.data) return;
-  const i = r.data;
-  for (const f of ["model_version", "target", "unit", "algorithm", "order",
-                   "features", "trained_at", "evaluation_status"]) {
-    if (!(f in i)) continue;
+  const info = toModelInfo(r.data);
+  for (const [label, value] of [
+    ["model_version", info.modelVersion], ["target", info.target],
+    ["unit", info.unit], ["algorithm", info.algorithm], ["order", JSON.stringify(info.order)],
+    ["features", JSON.stringify(info.features)], ["trained_at", info.trainedAt],
+    ["evaluation_status", info.evaluationStatus],
+  ]) {
+    if (value == null) continue;
     const d = document.createElement("div");
     d.className = "chip";
-    d.innerHTML = `<b>${f}</b>`;
-    d.appendChild(document.createTextNode(String(i[f])));
+    d.innerHTML = `<b>${label}</b>`;
+    d.appendChild(document.createTextNode(String(value)));
     box.appendChild(d);
   }
   audit("model/info: features & order terlapor",
-        Array.isArray(i.features) && i.features.length > 0 &&
-        Array.isArray(i.order) && i.order.length === 3,
-        `features=${JSON.stringify(i.features)}`);
+        info.features.length > 0 && info.order.length === 3,
+        `features=${JSON.stringify(info.features)}`);
   addLog("GET /model/info -> 200");
   renderAudit();
 }
@@ -857,11 +874,12 @@ $("infoBtn").addEventListener("click", loadModelInfo);
 async function refreshHealth() {
   const r = await api("/api/v1/health");
   if (r.status === 200 && r.data) {
-    setPill("hHealth", r.data.status === "ok", r.data.status);
-    $("hVer").textContent = r.data.service_version;
-    $("hUp").textContent = r.data.uptime_seconds + "s";
+    const health = toHealth(r.data);
+    setPill("hHealth", health.status === "ok", health.status);
+    $("hVer").textContent = health.version;
+    $("hUp").textContent = health.uptimeSeconds + "s";
     if (!auditRows.some((x) => x.name.startsWith("health:"))) {
-      auditHealth(r.data);
+      auditHealth(r.data); // audit = respons mentah (detektor drift)
       renderAudit();
     }
   } else {
@@ -981,14 +999,14 @@ function drawComparisonChart(forecastPoints, actualResponse) {
   hideChartTooltip();
 
   const actualMap = new Map((actualResponse.points || []).map(p => [
-    new Date(p.timestamp).getTime(), Number(p.actual_value)
+    new Date(p.when).getTime(), p.value
   ]));
   const parsed = forecastPoints.map(p => ({
-    timestamp: p.forecast_time,
-    time: new Date(p.forecast_time).getTime(),
-    forecast: Number(p.forecast_value),
-    actual: actualMap.has(new Date(p.forecast_time).getTime())
-      ? actualMap.get(new Date(p.forecast_time).getTime()) : null,
+    timestamp: p.when,
+    time: new Date(p.when).getTime(),
+    forecast: p.value,
+    actual: actualMap.has(new Date(p.when).getTime())
+      ? actualMap.get(new Date(p.when).getTime()) : null,
   })).sort((a, b) => a.time - b.time);
 
   const comparable = parsed.filter(p => p.actual != null &&
@@ -1095,7 +1113,7 @@ function renderComparisonTable(points) {
 
 async function loadActualsAndDraw(forecastPoints, siteId) {
   if (!forecastPoints || !forecastPoints.length) return;
-  const times = forecastPoints.map(p => p.forecast_time).sort();
+  const times = forecastPoints.map(p => p.when).sort();
   const params = new URLSearchParams({site_id:siteId, from:times[0], to:times[times.length-1]});
   addLog("GET /forecast/actual — mengambil data aktual untuk grafik");
   const r = await api(`/api/v1/forecast/actual?${params.toString()}`, {auth:true});
@@ -1107,17 +1125,17 @@ async function loadActualsAndDraw(forecastPoints, siteId) {
     renderAudit();
     return;
   }
-  const a = r.data;
+  const a = r.data; // audit di bawah membaca respons asli
   audit("actual API: schema + unit sesuai", a.unit === "W/m2" && a.timezone === "Asia/Makassar" &&
         Array.isArray(a.points) && a.n === a.points.length,
         `n=${a.n}, unit=${a.unit}, tz=${a.timezone}`);
-  const forecastTimes = new Set(forecastPoints.map(p=>new Date(p.forecast_time).getTime()));
+  const forecastTimes = new Set(forecastPoints.map(p=>new Date(p.when).getTime()));
   const actualTimes = new Set(a.points.map(p=>new Date(p.timestamp).getTime()));
   const overlap = [...forecastTimes].filter(t=>actualTimes.has(t)).length;
   audit("aktual dicocokkan tepat per timestamp (tanpa interpolasi)", true,
         `${overlap}/${forecastTimes.size} tanggal overlap`);
   renderAudit();
-  drawComparisonChart(forecastPoints, a);
+  drawComparisonChart(forecastPoints, toActualSeries(a)); // rendering: model internal
 }
 
 function bindChartInteractions() {
@@ -1192,23 +1210,23 @@ async function refreshSummary() {
   try {
     const rp = await api(`/api/v1/model/performance?site_id=${encodeURIComponent(s)}`, { auth: true });
     if (rp.status === 200 && rp.data) {
-      const d = rp.data;
-      const primary = (d.thresholds && d.thresholds.primary_horizon) || 7;
-      const horizons = Array.isArray(d.horizons) ? d.horizons : [];
-      const h = horizons.find(x => x.horizon === primary) || horizons[0];
+      const d = toPerformance(rp.data);
+      const primary = d.thresholds.primaryHorizon;
+      const horizons = d.horizons;
+      const h = horizons.find(x => x.days === primary) || horizons[0];
 
       if (h) {
         setKpi("kpiMae", Number(h.mae).toFixed(3),
-               `horizon ${h.horizon} hari · ${d.unit} · holdout ${primary === h.horizon ? "utama" : "terpanjang"}`);
+               `horizon ${h.days} hari · ${d.unit} · holdout ${primary === h.days ? "utama" : "terpanjang"}`);
         setKpi("kpiMape", Number(h.mape).toFixed(2) + "%",
-               `horizon ${h.horizon} hari · ambang ${d.thresholds ? d.thresholds.max_mape : "–"}%`);
+               `horizon ${h.days} hari · ambang ${d.thresholds.maxMape ?? "–"}%`);
       } else {
         setKpi("kpiMae", null, "belum ada laporan backtest", "warn");
         setKpi("kpiMape", null, "jalankan scripts/run_evaluation.py", "warn");
       }
 
       // evaluated_at = waktu backtest DIBUAT (bukan waktu request) — lihat §5.5.
-      const stamp = fmtStamp(d.evaluated_at);
+      const stamp = fmtStamp(d.evaluatedAt);
       setKpi("kpiLastRun", stamp,
              stamp ? `backtest dibuat · ${d.status}` : "belum pernah dievaluasi",
              stamp ? null : "warn");
@@ -1240,11 +1258,11 @@ async function refreshSummary() {
   try {
     const ri = await api("/api/v1/model/info", { auth: true });
     if (ri.status === 200 && ri.data) {
-      const i = ri.data;
-      setKpi("kpiModel", i.model_version, `ARIMA order ${JSON.stringify(i.order)} · ${i.target}`);
+      const info = toModelInfo(ri.data);
+      setKpi("kpiModel", info.modelVersion, `ARIMA order ${JSON.stringify(info.order)} · ${info.target}`);
       // training_rows = baris yang benar-benar dilatih (artefak), bukan tebakan.
-      if (Number.isFinite(i.training_rows) && i.training_rows > 0) {
-        setKpi("kpiRows", i.training_rows.toLocaleString("id-ID"),
+      if (Number.isFinite(info.trainingRows) && info.trainingRows > 0) {
+        setKpi("kpiRows", info.trainingRows.toLocaleString("id-ID"),
                "baris dilatih (artefak training)");
       }
       setEndpointStatus("info", "ok", "HTTP 200");
