@@ -90,24 +90,38 @@ endpoint tidak berubah.
 - Docs: <http://localhost:8000/docs>
 - Health (tanpa key): <http://localhost:8000/api/v1/health>
 
-### API key
+### API key (satu konsumen, satu key)
 
 Endpoint kecuali `/health` butuh header `X-API-Key`. **Tidak ada key demo
 bawaan di kode** — semua key hanya dari environment variable `API_KEYS`
-(dipisah koma). Tanpa itu, endpoint ber-key membalas `401 E_UNAUTHORIZED`
-(by design).
+dalam format **per konsumen** `label:key` (kontrak §1.1):
 
-Salin template lalu isi nilainya:
+    API_KEYS=monitoring:<kunci>,ci:<kunci>
+
+Satu konsumen (platform monitoring, CI, engineer) memegang key sendiri:
+server mencatat pemakaian per konsumen di log (`consumer=monitoring ...` —
+nilai key tidak pernah dicatat) dan tiap key punya rate-limit 60/mnt
+sendiri, sehingga pencabutan satu konsumen tidak memutus konsumen lain.
+Tanpa `API_KEYS`, endpoint ber-key membalas `401 E_UNAUTHORIZED` (by design).
+
+**Key disimpan di secret manager milik masing-masing konsumen** (environment
+panel Blitz, vault, dsb) — bukan di source code, URL, file HTML, atau chat.
+
+Salin template lalu isi nilainya (label huruf kecil, tanpa spasi):
 
     cp .env.example .env        # .env sudah di .gitignore — jangan commit
-    set API_KEYS=kunci-produksi-panjang-disini
+    python -c "import secrets; print(secrets.token_urlsafe(32))"   # sekali per konsumen
+    set API_KEYS=monitoring:<hasil-generate>
     uvicorn app.main:app --port 8000
+
+Pencabutan per konsumen: hapus entri `<label>:<key>` dari `API_KEYS` →
+restart → key itu `403 E_FORBIDDEN`, konsumen lain tetap jalan.
 
 ### Contoh memanggil
 
     curl -X POST http://localhost:8000/api/v1/forecast ^
       -H "Content-Type: application/json" ^
-      -H "X-API-Key: kunci-produksi-panjang-disini" ^
+      -H "X-API-Key: <kunci-konsumen>" ^
       -d "{\"site_id\":\"PLTS_KUPANG\",\"horizon\":7,\"history\":[…]}"
 
 `history` = minimal 30 poin harian, setiap `timestamp` **wajib offset

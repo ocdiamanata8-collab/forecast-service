@@ -8,13 +8,14 @@ logika domain. Mengganti backend autentikasi nanti cukup mengganti fungsi
 
 from __future__ import annotations
 
+import re
 import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable
 
-from fastapi import Depends, Header, Request
+from fastapi import Depends, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 
@@ -103,7 +104,12 @@ def error_response(
 # ---------------------------------------------------------------------------
 @dataclass
 class ApiKeyRegistry:
-    """Registri API key sementara untuk PoC.
+    """Registri API key: satu entri per KONSUMEN (§1.1).
+
+    ``keys`` memetakan ``key -> label konsumen`` (mis. ``monitoring``, ``ci``)
+    sehingga pemakaian bisa dipantau dan dicabut per konsumen — label hanya
+    metadata untuk log/operasi; verifikasi request tetap lookup key saja
+    (kontrak §1.1 tidak mengenal scope/permission).
 
     Pada Fase berikutnya, ganti penyimpannya (env var / DB) tanpa mengubah
     pemanggil di endpoint. ``durable`` menandai apakah key ini dianggap
@@ -111,7 +117,7 @@ class ApiKeyRegistry:
     disalahartikan sebagai produksi.
     """
 
-    keys: dict[str, str] = field(default_factory=dict)  # key -> label
+    keys: dict[str, str] = field(default_factory=dict)  # key -> label konsumen
     durable: bool = False
 
     def add(self, key: str, label: str, *, durable: bool = True) -> None:
@@ -123,6 +129,52 @@ class ApiKeyRegistry:
     @staticmethod
     def generate() -> str:
         return secrets.token_urlsafe(32)
+
+
+#: Label konsumen: huruf kecil di awal, lalu huruf/angka/dash/underscore.
+#: Sengaja ketat — label ikut masuk log dan dipakai operasi revoke, jadi
+#: spasi/`=`/`:` akan membuat log sulit diparse.
+CONSUMER_LABEL_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
+
+#: Label untuk entri `API_KEYS` tanpa prefix label (format lama).
+LEGACY_LABEL = "legacy"
+
+
+def parse_api_keys(raw: str) -> dict[str, str]:
+    """Parse env ``API_KEYS`` → ``{key: label}`` per konsumen.
+
+    Format per entri (dipisah koma, tanpa spasi):
+
+        label:key          # satu konsumen — label = identitas pemakaian
+        key                # entri lama tanpa label -> label ``legacy``
+
+    ``:`` aman sebagai pemisah: alphabet ``secrets.token_urlsafe`` adalah
+    ``[A-Za-z0-9_-]`` — token tidak pernah memuat titik dua, jadi split
+    pertama pada ``:`` memisahkan label dari key tanpa ambigu.
+
+    Raise ``ValueError`` pada label/key tidak sah — dipanggil saat startup
+    sehingga konfigurasi salah GAGAL SEJAK AWAL, bukan diam-diam membatalkan
+    konsumen (pola sama dengan penolakan key <16 karakter).
+    """
+    parsed: dict[str, str] = {}
+    for entry in filter(None, (e.strip() for e in raw.split(","))):
+        if ":" in entry:
+            label, key = entry.split(":", 1)
+            label = label.strip()
+            key = key.strip()
+            if not CONSUMER_LABEL_PATTERN.match(label):
+                raise ValueError(
+                    f"label konsumen tidak sah: {label!r} — harus pola "
+                    f"{CONSUMER_LABEL_PATTERN.pattern} (mis. 'monitoring:KUNCI')"
+                )
+        else:
+            label, key = LEGACY_LABEL, entry
+        if len(key) < 16:
+            raise ValueError(
+                f"API key '{label}' minimal 16 karakter (dapat {len(key)})"
+            )
+        parsed[key] = label
+    return parsed
 
 
 @dataclass
@@ -166,6 +218,7 @@ def get_limiter() -> RateLimiter:
 
 def require_api_key(
     request: Request,
+    response: Response,
     x_api_key: str | None = Depends(api_key_header),
 ) -> str:
     """Dependency FastAPI: validasi ``X-API-Key`` (kontrak §1.1).
@@ -177,13 +230,24 @@ def require_api_key(
     - Key tak dikenal / dicabut -> ``403 E_FORBIDDEN``
     - Lewat rate limit -> ``429 E_RATE_LIMITED`` dengan ``Retry-After``
 
+    Identitas konsumen (label dari ``API_KEYS=label:key``) disimpan di
+    ``request.state.api_key_label`` — dipakai middleware untuk LOG PEMAKAIAN
+    per konsumen (bukan untuk otorisasi; kontrak §1.1 biner). Header
+    ``X-RateLimit-Limit``/``-Remaining`` dilekatkan ke respons SUKSES
+    (§1.3 — sebelumnya hanya di 429).
+
     Raise :class:`FastApiError` agar handler middleware yang membentuk respons.
     """
     if not x_api_key:
         raise FastApiError("E_UNAUTHORIZED", "missing X-API-Key header")
     registry = get_registry()
-    if x_api_key not in registry.keys:
+    label = registry.keys.get(x_api_key)
+    if label is None:
         raise FastApiError("E_FORBIDDEN", "invalid or revoked API key")
+
+    # Disetel SEBELUM cek rate limit: baris 429 pun harus tercatat sebagai
+    # pemakaian konsumen ini (middleware membaca label ini).
+    request.state.api_key_label = label
 
     allowed, remaining, retry_after = get_limiter().check(x_api_key)
     if not allowed:
@@ -194,8 +258,14 @@ def require_api_key(
                 "Retry-After": str(retry_after),
                 "X-RateLimit-Limit": str(get_limiter().limit),
                 "X-RateLimit-Remaining": "0",
+                # §1.3 menjanjikan header ini sejak draft pertama tapi belum
+                # pernah dikirim — detik sampai jendela kuota ter-reset.
+                "X-RateLimit-Reset": str(retry_after),
             },
         )
+    # §1.3: header rate limit juga di respons yang lolos (bukan hanya 429).
+    response.headers["X-RateLimit-Limit"] = str(get_limiter().limit)
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
     return x_api_key
 
 

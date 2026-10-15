@@ -41,6 +41,35 @@ X-API-Key: <key>          ← wajib pada semua endpoint KECUALI GET /api/v1/heal
 - Key salah/dicabut → `403`, kode `E_FORBIDDEN`.
 - `GET /api/v1/health` sengaja **terbuka** (tanpa key) agar probe uptime external bisa memantaunya; responsnya hanya memuat field minimal (§6.6), tanpa info model detail.
 
+**Satu konsumen, satu key.** Setiap konsumen (platform monitoring, CI,
+engineer) memegang key sendiri sehingga pemakaian **dipantau per konsumen**
+dan dapat **dicabut per konsumen** tanpa memutus pihak lain. Konfigurasi
+server memakai format env `API_KEYS`:
+
+```
+API_KEYS=<label1>:<key1>,<label2>:<key2>
+         # contoh: monitoring:<token>,ci:<token>
+```
+
+- `label` = identitas konsumen (`^[a-z][a-z0-9_-]{1,31}$`) — dipakai untuk
+  **log pemakaian** server (`consumer=<label> ...` per request; nilai key
+  tidak pernah dicatat) dan operasi revoke. Label **bukan** bagian dari
+  kontrak HTTP: header tetap hanya `<key>` tanpa prefix.
+- Entri tanpa label (`API_KEYS=<key>`) tetap valid untuk kompatibilitas —
+  label menjadi `legacy`.
+- Verifikasi tetap lookup key terhadap env `API_KEYS` (tidak ada fallback
+  key di kode, tidak ada klaim/scope tambahan — auth v1 biner: ada key sah
+  atau tidak).
+- **Penyimpanan key**: setiap konsumen menyimpan key miliknya di secret
+  manager miliknya sendiri (mis. environment/secret manager platform
+  monitoring) — **bukan** di source code, URL, file HTML, atau chat.
+- **Pencabutan per konsumen**: hapus entri `<label>:<key>` dari `API_KEYS`
+  → deploy/restart → key itu `403 E_FORBIDDEN`, konsumen lain tak
+  terpengaruh. (Registry dibangun ulang saat startup — tanpa persistensi
+  tidak ada jalur revoke tanpa restart.)
+- **Rotasi**: tambahkan key baru untuk konsumen itu → pastikan konsumen
+  memakai key baru → hapus key lama dari `API_KEYS` → restart.
+
 ### 1.2 Idempotensi & keamanan ulang panggilan
 
 | Method | Idempoten? | Catatan |
@@ -50,8 +79,12 @@ X-API-Key: <key>          ← wajib pada semua endpoint KECUALI GET /api/v1/heal
 
 ### 1.3 Rate limit
 
-- **60 request/menit per API key** untuk semua endpoint non-health.
-- Respons `429` menyertakan header: `Retry-After: <detik>`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`.
+- **60 request/menit per API key** untuk semua endpoint non-health — per key
+  = per konsumen, jadi laju satu konsumen tidak pernah menguras kuota konsumen lain.
+- Respons **429** menyertakan header: `Retry-After: <detik>`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`.
+- Respons **sukses** menyertakan `X-RateLimit-Limit` dan `X-RateLimit-Remaining`
+  (kuota tersisa untuk key itu) — konsumen bisa memantau sisa kuota sebelum
+  terkena 429. Menambah header = non-breaking (§9.2).
 - Body `429` memakai envelope error standar (§5) dengan kode `E_RATE_LIMITED`.
 
 ### 1.4 Caching
@@ -698,6 +731,7 @@ menjadi breaking change nanti.
 
 | Versi | Tanggal | Perubahan |
 |---|---|---|
+| v1.0.0-draft | 2026-10-15 | **API key per konsumen (§1.1) + kuota terlihat (§1.3)** — format env `API_KEYS=label:key` per konsumen: label = identitas untuk log pemakaian server (`consumer=<label>` per request ber-key; nilai key tidak pernah dicatat) dan pencabutan per konsumen (hapus satu entri → deploy → `403`, konsumen lain tak terpengaruh). Entri tanpa label tetap sah (label `legacy`) — kompatibilitas mundur. **Tidak ada perubahan HTTP untuk klien**: header tetap `<key>` tanpa prefix, verifikasi tetap lookup env tanpa fallback; label = metadata deployment (bukan kontrak). §1.3: header `X-RateLimit-Limit`/`-Remaining` kini juga di respons **sukses** (sebelumnya hanya 429), dan `X-RateLimit-Reset` di 429 yang **dijanjikan kontrak sejak draft pertama tapi belum pernah dikirim** kini benar-benar ada (perbaikan menuju kontrak, §9.2). Semua **non-breaking** (§9.2: menambah header + dokumentasi + metadata; field/kode/status tidak berubah). |
 | v1.0.0-draft | 2026-10-15 | **Perbaikan filter `GET /forecast/history` (§5.3)** — parameter `from` sebelumnya TIDAK PERNAH diterapkan karena route memakai model Pydantic via `Depends()` dengan alias `from`; FastAPI mencocokkan nama field (`from_`), bukan alias, sehingga `?from=...` diam-diam diabaikan dan filter grafik historis selalu mengembalikan semua data. Route kini memakai `Query(alias="from")` eksplisit (pola identik §5.7). Efek: `to < from` kini benar-benar `422 E_TIME_RANGE_INVALID` (sebelumnya 200 kosong), filter `from`/`to` menyaring `generated_at` sesuai spesifikasi, `from` naive → `422 E_TZ_REQUIRED` (baris §6.1 `E_TZ_REQUIRED` diperluas ke history), dan `limit` di luar 1..100 kini `422 E_LIMIT_RANGE` (kode §6.1; sebelumnya `E_VALIDATION_FAILED` generik — kode spesifik diwajibkan kontrak, jadi perbaikan menuju kontrak, bukan perubahan). **§5.2 diperjelas**: `latest` TIDAK punya parameter `horizon`; membaca forecast tersimpan apa adanya (scheduler horizon 7); parameter tak dikenal diabaikan, bukan error (pola "query tak dikenal diabaikan" konsisten dengan HTTP). Model query `ForecastLatestQuery`/`ForecastHistoryQuery` dihapus (yatim; sumber bug alias). Semua **non-breaking** (§9.2): response field tidak berubah; perilaku yang berubah semuanya menuju spesifikasi yang sudah tertulis. |
 | v1.0.0-draft | 2026-10-14 | **Scheduler latar belakang (Fase 4) diimplementasikan** — §5.1 menyatakan penyimpanan ada di scheduler; kini job itu ada (`app/scheduler.py`): tick pertama saat startup lalu regenerasi per jam (§1.4 / SLA §5.2), memanggil rantai **identik** `service.run_forecast` (§8), history dari tail `data/actuals.csv`. **Gate §10.5** diperbarui: interval sudah diputuskan (3600s; env `SCHEDULER_ENABLED`, `SCHEDULER_INTERVAL_SECONDS`); retensi lintas-restart masih terbuka. Perilaku kontrak tidak berubah — `GET /forecast/latest` kini benar-benar terisi 200 setelah startup (sebelumnya selalu 404 `E_NO_FORECAST` karena scheduler belum pernah dibangun). Tidak ada perubahan field/kode; **non-breaking** (§9.2). |
 | v1.0.0-draft | 2026-10-12 | **§5.5 `evaluated_at` dikoreksi**: kini memakai `generated_at` laporan backtest (waktu asli pembuatan), bukan `site_now()` (waktu request) — sebelumnya membuat "run terakhir" selalu tampak baru tiap request. Nilai `null` bila belum pernah dievaluasi. **Tambah `data_rows`** (§5.5) = `n_rows` laporan, dibedakan dari `n_samples`. **§5.4 tambah `training_rows`** dari `model/artifacts.json`. Semua penambahan field = **non-breaking** (§9.2); koreksi `evaluated_at` = perbaikan kontrak menuju spesifikasi §1.5 (respons sebelumnya bisa mengirim timestamp naive dari laporan lama — parser kini melokalisasi eksplisit ke zona site). |

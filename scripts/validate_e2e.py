@@ -27,7 +27,10 @@ BASE = "http://127.0.0.1:8000"
 # hygiene: kebocoran API key adalah masalah termahal di tahap ini). Tanpa
 # API_KEYS, script ini berhenti dengan pesan jelas, bukan diam-diam
 # memakai kunci yang bisa saja sudah ter-commit di commit sebelumnya.
-_env_key = os.environ.get("API_KEYS", "").split(",")[0].strip()
+_env_entry = os.environ.get("API_KEYS", "").split(",")[0].strip()
+# API_KEYS memakai format per-konsumen `label:key` (kontrak §1.1) — header
+# X-API-Key membawa HANYA nilai key, bukan prefix label.
+_env_key = _env_entry.split(":", 1)[1].strip() if ":" in _env_entry else _env_entry
 if not _env_key:
     print("ERROR: environment variable API_KEYS kosong.")
     print("Set dulu, mis.:  $env:API_KEYS='kunci-lokal-12345678901234567890'")

@@ -247,6 +247,10 @@ def test_rate_limit_429_with_retry_headers(client):
     assert last.headers.get("Retry-After"), "429 tanpa Retry-After"
     assert last.headers.get("X-RateLimit-Remaining") == "0"
     assert last.headers.get("X-RateLimit-Limit") == "60"
+    # §1.3: X-RateLimit-Reset wajib di 429 (detik sampai kuota kembali).
+    reset = last.headers.get("X-RateLimit-Reset")
+    assert reset is not None and reset.isdigit() and int(reset) >= 1, \
+        f"429 tanpa X-RateLimit-Reset yang sah (dapat {reset!r})"
     # Pesan mengarahkan ke fallback sesuai instruksi: pakai hasil latest.
     assert "latest" in err["message"].lower() or "limit" in err["message"].lower()
 

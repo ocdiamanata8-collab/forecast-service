@@ -34,11 +34,18 @@ from app.api import health as health_api
 from app.api import model as model_api
 from app.artifacts import ArtifactError, load_artifacts
 from app.scheduler import enabled_from_env, interval_from_env, scheduler_loop, tick as scheduler_tick
-from app.security import FastApiError, error_response, get_registry, request_id_of
+from app.security import (
+    FastApiError,
+    error_response,
+    get_registry,
+    parse_api_keys,
+    request_id_of,
+)
 from app.storage import InMemoryForecastStore
 from app.version import VersionFileError, assert_sane
 
 log = logging.getLogger("app.main")
+usage_log = logging.getLogger("app.auth")
 
 
 #: Pesan manusiawi per kode (kontrak §3.3). ``message`` boleh bebas berubah
@@ -98,14 +105,36 @@ async def lifespan(app: FastAPI):
     app.state.store = InMemoryForecastStore()
     app.state.performance_cache = {}
 
+    # Root handler SEBELUM log pertama: tanpa ini log INFO app (usage log,
+    # scheduler, registrasi key) tenggelam di default WARNING uvicorn.
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    # ------------------------------------------------------------------
+    # API key per konsumen (§1.1) — format env: `API_KEYS=label:key,...`
+    #
+    # Satu konsumen (platform monitoring, CI, engineer) satu key, dengan
+    # LABEL di env: pemakaian dipantau per konsumen lewat log (bukan lewat
+    # nilai key — nilai key tidak pernah dicatat), dan pencabutan per
+    # konsumen = menghapus satu entri dari env lalu deploy ulang. Key hanya
+    # dari environment — TIDAK ada fallback key di kode; belum dikonfigurasi
+    # = semua endpoint ber-key menolak 401. Format salah label/key <16 char
+    # = gagal startup (jelas sejak awal, bukan diam-diam membatalkan konsumen).
+    # ------------------------------------------------------------------
     registry = get_registry()
-    # API key hanya dari environment — TIDAK ada demo/fallback key di kode.
-    # Bila belum dikonfigurasi, endpoint ber-key tetap menolak 401 dan health
-    # tetap dapat dipanggil. Untuk lokal, lihat .env.example.
-    for key in filter(None, os.environ.get("API_KEYS", "").split(",")):
-        clean_key = key.strip()
-        if clean_key and clean_key not in registry.keys:
-            registry.add(clean_key, "env", durable=True)
+    parsed_keys = parse_api_keys(os.environ.get("API_KEYS", ""))
+    for key, label in parsed_keys.items():
+        if key not in registry.keys:
+            registry.add(key, label, durable=True)
+    # Visibilitas startup untuk operator: konsumen apa saja yang aktif.
+    # HANYA label & jumlah — nilai key tidak pernah dicatat.
+    log.info(
+        "api key aktif: %d entri, konsumen=%s",
+        len(registry.keys),
+        ",".join(sorted(set(registry.keys.values()))) or "-",
+    )
 
     # Daftar site yang dikenal layanan (kontrak §6.1 → 404 E_SITE_UNKNOWN
     # untuk latest/history/performance). Tanpa registry ini, site_id yang
@@ -234,6 +263,25 @@ def create_app() -> FastAPI:
         request.state.request_id = rid
         response = await call_next(request)
         response.headers["X-Request-Id"] = rid
+        # ------------------------------------------------------------------
+        # Log pemakaian per konsumen (§1.1) — SATU baris per request ber-key.
+        # Format key=value siap diparse platform monitoring/log pipeline.
+        # label konsumen dari API_KEYS=label:key; nilai KEY TIDAK PERNAH ikut
+        # dicatat (kebocoran key ke log = pelanggaran kebersihan rahasia).
+        # health/docs tanpa key tercatat consumer=- (probe uptime bukan konsumen).
+        # ------------------------------------------------------------------
+        consumer = getattr(request.state, "api_key_label", "-")
+        usage_log.info(
+            "usage consumer=%s method=%s path=%s status=%s request_id=%s "
+            "rl_limit=%s rl_remaining=%s",
+            consumer,
+            request.method,
+            request.url.path,
+            response.status_code,
+            rid,
+            response.headers.get("X-RateLimit-Limit", "-"),
+            response.headers.get("X-RateLimit-Remaining", "-"),
+        )
         return response
 
     @app.exception_handler(FastApiError)

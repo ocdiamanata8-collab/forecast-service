@@ -13,6 +13,8 @@
 #
 # Set API_KEYS di Environment Variables sebelum pertama kali deploy —
 # tanpa itu endpoint ber-key membalas 401 (by design, lihat app/main.py).
+# Format per konsumen (kontrak §1.1): API_KEYS=<label>:<kunci>,<label>:<kunci>
+# (satu konsumen satu key — pemakaian dilog per label, revoke per entri).
 services:
   - type: web
     name: forecast-svc

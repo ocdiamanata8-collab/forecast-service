@@ -35,16 +35,27 @@ tanpa menguji ulang (termasuk `tests/test_engine_golden.py` dan
 4. **Isi environment variable `API_KEYS`** sebelum service pertama kali
    start. Tanpa ini, semua endpoint ber-key membalas `401` (by design —
    lihat `app/main.py`).
-   - Generate kunci lokal (43 karakter — di atas minimum 16):
+
+   Format **per konsumen** (kontrak §1.1) — satu konsumen satu key + label:
+
+   ```
+   API_KEYS=<label1>:<kunci1>,<label2>:<kunci2>
+   # contoh: API_KEYS=monitoring:<kunci>,ci:<kunci>
+   ```
+
+   - Label = identitas konsumen (huruf kecil, 2–32 karakter) — dipakai log
+     pemakaian (`consumer=monitoring ...`) dan pencabutan per konsumen.
+   - Generate **satu kunci baru per konsumen** (43 karakter — di atas
+     minimum 16):
      ```powershell
      python -c "import secrets; print(secrets.token_urlsafe(32))"
      ```
-   - Dua kunci atau lebih dipisah koma, tanpa spasi:
-     ```
-     API_KEYS=<kunci_pertama>,<kunci_kedua>
-     ```
-   - Jangan pernah menaruh kunci nyata di repository, di URL, atau di file
-     HTML. `.env` sudah di-gitignore; `.env.example` hanya template placeholder.
+   - **Simpan kunci di secret manager milik konsumen itu sendiri** (mis.
+     environment panel Blitz monitoring, vault CI) — bukan di repository,
+     URL, file HTML, atau chat. `.env` sudah di-gitignore; `.env.example`
+     hanya template placeholder.
+   - Pencabutan satu konsumen: hapus `<label>:<kunci>` dari `API_KEYS` →
+     deploy ulang → key itu `403`, konsumen lain tidak terpengaruh.
 
    **Yang sengaja TIDAK ada di env** (lihat `.env.example` §2):
 
@@ -59,9 +70,12 @@ tanpa menguji ulang (termasuk `tests/test_engine_golden.py` dan
 ## Catatan penting untuk PoC
 
 - **Persistensi hilang saat restart**: `forecast/latest` dan
-  `forecast/history` memakai penyimpanan in-memory. Setelah deploy, panggil
-  `POST /api/v1/forecast` dulu sebelum `GET /forecast/latest` berfungsi —
-  endpoint itu memang dirancang tidak menyimpan (kontrak §5.1).
+  `forecast/history` memakai penyimpanan in-memory. Tapi scheduler Fase 4
+  mengisi ulang **otomatis saat startup** (tick pertama + regenerasi per
+  jam) dari tail `data/actuals.csv` — `GET /forecast/latest` langsung 200
+  dalam hitungan detik setelah deploy tanpa perlu memanggil
+  `POST /forecast` dulu (kontrak §5.1: POST on-demand memang tidak
+  menyimpan).
 - **Rate limit 60 request/menit per key** (kontrak §1.3) — cukup untuk
   PoC, tidak untuk polling ketat.
 - **Data aktual (2023–2025) sudah termuat** dari `data/actuals.csv` —

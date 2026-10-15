@@ -117,7 +117,12 @@ def main() -> int:
                         help="X-API-Key; otherwise reads first key from API_KEYS")
     args = parser.parse_args()
     base = args.base.rstrip("/")
-    key = args.key or os.environ.get("API_KEYS", "").split(",", 1)[0].strip() or None
+    raw_key = args.key or os.environ.get("API_KEYS", "").split(",", 1)[0].strip() or None
+    # API_KEYS memakai format per-konsumen `label:key` (kontrak §1.1) — header
+    # X-API-Key membawa HANYA nilai key, bukan prefix label.
+    if raw_key and ":" in raw_key:
+        raw_key = raw_key.split(":", 1)[1].strip()
+    key = raw_key or None
 
     is_local = base.startswith(("http://127.0.0.1", "http://localhost"))
     print(f"Target: {'local' if is_local else 'public'} ({base})")

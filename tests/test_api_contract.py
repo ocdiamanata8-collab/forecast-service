@@ -57,6 +57,64 @@ def test_wrong_api_key_returns_403(client):
     assert r.json()["error"]["code"] == "E_FORBIDDEN"
 
 
+def test_successful_auth_includes_rate_limit_headers(client):
+    """§1.3: response yang lolos juga menunjukkan kuota per key."""
+    r = client.get("/api/v1/model/info", headers={"X-API-Key": "dev-key-change-me-0123456789"})
+    assert r.status_code == 200
+    assert r.headers["X-RateLimit-Limit"] == "60"
+    assert 0 <= int(r.headers["X-RateLimit-Remaining"]) < 60
+
+
+def test_consumer_keys_are_isolated_and_revocable(client, monkeypatch):
+    """Satu konsumen punya key+kuota sendiri dan bisa dicabut tanpa mematikan
+    konsumen lain (API_KEYS labels + RateLimiter per raw key).
+    """
+    import os
+
+    from app.security import get_limiter, get_registry
+
+    key_monitoring = "monitoring-key-0123456789abcdef"
+    key_ci = "ci-consumer-key-0123456789abcdef"
+    monkeypatch.setenv("API_KEYS", f"monitoring:{key_monitoring},ci:{key_ci}")
+    registry = get_registry()
+    saved_keys = dict(registry.keys)
+    registry.keys.clear()
+    limiter = get_limiter()
+    saved_hits = dict(limiter._hits)
+    limiter._hits.clear()
+    try:
+        # Lifespan parse env -> label registry; distinct labels.
+        from fastapi.testclient import TestClient
+        from app.main import create_app
+
+        with TestClient(create_app()) as c:
+            assert registry.keys[key_monitoring] == "monitoring"
+            assert registry.keys[key_ci] == "ci"
+
+            # Key A consumes its own 60/min; key B remains independent.
+            h_monitoring = {"X-API-Key": key_monitoring}
+            h_ci = {"X-API-Key": key_ci}
+            for _ in range(60):
+                ok = c.get("/api/v1/model/info", headers=h_monitoring)
+                assert ok.status_code == 200
+            limited = c.get("/api/v1/model/info", headers=h_monitoring)
+            assert limited.status_code == 429
+            assert limited.json()["error"]["code"] == "E_RATE_LIMITED"
+            assert c.get("/api/v1/model/info", headers=h_ci).status_code == 200
+
+            # Revoke only monitoring: it gets 403, CI is still valid.
+            registry.keys.pop(key_monitoring)
+            revoked = c.get("/api/v1/model/info", headers=h_monitoring)
+            assert revoked.status_code == 403
+            assert revoked.json()["error"]["code"] == "E_FORBIDDEN"
+            assert c.get("/api/v1/model/info", headers=h_ci).status_code == 200
+    finally:
+        registry.keys.clear()
+        registry.keys.update(saved_keys)
+        limiter._hits.clear()
+        limiter._hits.update(saved_hits)
+
+
 def test_health_is_open_without_key(client):
     r = client.get("/api/v1/health")
     assert r.status_code == 200

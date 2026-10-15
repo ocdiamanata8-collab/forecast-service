@@ -62,6 +62,67 @@ def test_multi_key_format():
         os.environ.pop("API_KEYS", None)
 
 
+def test_labeled_key_per_consumer():
+    """Format `label:key` (§1.1): label konsumen terdaftar per key.
+
+    Inilah yang membuat pemakaian bisa dipantau & dicabut per konsumen —
+    platform monitoring dan CI masing-masing punya key+label sendiri.
+    """
+    from fastapi.testclient import TestClient
+
+    os.environ["API_KEYS"] = f"monitoring:{KEY_A},ci:{KEY_B}"
+    try:
+        registry = get_registry()
+        registry.keys.clear()
+        with TestClient(create_app()) as c:
+            check(registry.keys.get(KEY_A) == "monitoring",
+                  f"label monitoring terpasang (dapat {registry.keys.get(KEY_A)!r})")
+            check(registry.keys.get(KEY_B) == "ci",
+                  f"label ci terpasang (dapat {registry.keys.get(KEY_B)!r})")
+            r = c.get("/api/v1/model/info", headers={"X-API-Key": KEY_A})
+            check(r.status_code == 200, f"key ber-label diterima (HTTP {r.status_code})")
+            # Label tidak boleh bocor ke body response (hanya untuk log).
+            check("monitoring" not in r.text,
+                  "label konsumen tidak bocor ke body response")
+    finally:
+        registry.keys.clear()
+        os.environ.pop("API_KEYS", None)
+
+
+def test_bare_key_gets_legacy_label():
+    """Entri tanpa label tetap diterima — label 'legacy' (backward compatible)."""
+    from app.security import parse_api_keys
+
+    parsed = parse_api_keys(KEY_A)
+    check(parsed == {KEY_A: "legacy"}, f"entri polos -> legacy (dapat {parsed})")
+    mixed = parse_api_keys(f"monitoring:{KEY_A},{KEY_B}")
+    check(mixed[KEY_B] == "legacy" and mixed[KEY_A] == "monitoring",
+          "campuran label + polos sama-sama diterima")
+
+
+def test_invalid_label_or_short_labeled_key_rejected_at_startup():
+    """Label salah pola / key <16 dalam `label:key` = ValueError saat startup.
+
+    Gagal SEJAK AWAL, bukan diam-diam membatalkan konsumen (pola sama
+    dengan penolakan key pendek polos).
+    """
+    from app.security import parse_api_keys
+
+    bad_cases = [
+        ("Monitoring:" + "x" * 40, "label huruf besar ditolak"),
+        ("bad label:" + "x" * 40, "label ber-spasi ditolak"),
+        ("9starts-digit:" + "x" * 40, "label diawali angka ditolak"),
+        (f"monitoring:{'x' * 10}", "key <16 dalam label:key ditolak"),
+        (f"monitoring:", "key kosong setelah label ditolak"),
+    ]
+    for raw, label in bad_cases:
+        try:
+            parse_api_keys(raw)
+            check(False, label)
+        except ValueError as e:
+            check(True, f"{label}: {e}")
+
+
 def test_short_keys_rejected_at_startup():
     """Kunci <16 karakter DITOLAK ApiKeyRegistry — startup gagal, bukan diam-diam."""
     from app.security import ApiKeyRegistry
@@ -209,6 +270,12 @@ def test_env_example_documents_omissions():
 def main() -> int:
     print("\n[1] Format multi-key")
     test_multi_key_format()
+    print("\n[1b] Format label:key per konsumen (§1.1)")
+    test_labeled_key_per_consumer()
+    print("\n[1c] Entri polos -> label legacy (backward compatible)")
+    test_bare_key_gets_legacy_label()
+    print("\n[1d] Label salah pola / key pendek ber-label DITOLAK saat startup")
+    test_invalid_label_or_short_labeled_key_rejected_at_startup()
     print("\n[2] Kunci <16 karakter DITOLAK (validasi ApiKeyRegistry)")
     test_short_keys_rejected_at_startup()
     print("\n[3] Spasi sekitar koma")
