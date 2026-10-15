@@ -34,6 +34,7 @@ from __future__ import annotations
 import sys
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -294,6 +295,28 @@ def test_latest_contract_fields(seeded_client):
         assert point["forecast_value"] >= 0
 
 
+def test_latest_ignores_unknown_query_horizon(seeded_client):
+    """§5.2: `latest` membaca store apa adanya — TIDAK punya parameter horizon.
+
+    URL monitoring lama bisa membawa `?horizon=24`; parameter tak dikenal
+    diabaikan (pola HTTP), bukan 422 — dan horizon response = horizon
+    tersimpan (scheduler: 7), bukan nilai query. Forecast on-demand dengan
+    horizon pilihan tetap lewat POST /forecast (§5.1).
+    """
+    base = auth(seeded_client, seeded_client.get(
+        "/api/v1/forecast/latest", params={"site_id": SITE}, headers=HEADERS
+    ))
+    with_query = auth(seeded_client, seeded_client.get(
+        "/api/v1/forecast/latest",
+        params={"site_id": SITE, "horizon": 24, "unknown_param": "x"},
+        headers=HEADERS,
+    ))
+    assert base.status_code == with_query.status_code == 200
+    # Response identik — query diabaikan, bukan memengaruhi isi.
+    assert with_query.json() == base.json()
+    assert with_query.json()["horizon"] == HORIZON == len(with_query.json()["forecast"])
+
+
 # ===========================================================================
 # 5. GET /api/v1/forecast/history — §5.3 (dua varian: default & include_points)
 # ===========================================================================
@@ -334,6 +357,117 @@ def test_history_contract_fields_include_points(seeded_client):
         for point in item["forecast"]:
             assert_fields(point, "forecast_point", "history item point")
             assert_wita(point["forecast_time"], "history point.forecast_time")
+
+
+# ===========================================================================
+# 5b. Filter query §5.3 — REGRESI: alias Pydantic via Depends() tidak bekerja;
+#     FastAPI mencocokkan nama field, bukan alias, sehingga `?from=` dulu
+#     DIABAIKAN diam-diam (filter monitoring tidak pernah diterapkan).
+#     Route kini memakai Query(alias="from") eksplisit — test ini mengunci
+#     bahwa parameter benar-benar SAMPAI ke store, bukan sekadar 200 OK.
+# ===========================================================================
+@pytest.fixture()
+def history_client(client):
+    """Store dengan 3 forecast pada generated_at berbeda (untuk uji filter)."""
+    from datetime import datetime as dt
+
+    store = InMemoryForecastStore()
+    hist = deterministic_history()
+    for day, hour in ((1, 6), (2, 6), (3, 6)):
+        gen = dt(2026, 10, day, hour, 0, tzinfo=ZoneInfo("Asia/Makassar"))
+        scheduler.run_and_store_forecast(
+            store, site_id=SITE, history=hist, horizon=HORIZON, generated_at=gen
+        )
+    client.app.state.store = store
+    return client
+
+
+def test_history_from_filter_applies_to_generated_at(history_client):
+    """§5.3: `from` menyaring generated_at >= from — bukan diabaikan.
+
+    REGRESI: sebelum perbaikan, `?from=` tidak pernah terisi (alias
+    Pydantic + Depends) sehingga endpoint selalu mengembalikan SEMUA item.
+    """
+    r = auth(history_client, history_client.get(
+        "/api/v1/forecast/history",
+        params={"site_id": SITE, "from": "2026-10-02T00:00:00+08:00"},
+        headers=HEADERS,
+    ))
+    assert r.status_code == 200, r.text
+    gens = [i["generated_at"] for i in r.json()["items"]]
+    assert gens, "from=2026-10-02 harus menyisakan >= 1 item"
+    assert all(g >= "2026-10-02T00:00:00+08:00" for g in gens), \
+        f"from tidak diterapkan — item di luar rentang bocor: {gens}"
+    assert len(gens) < 3, f"from harus membuang entri sebelumnya, dapat {len(gens)}/3"
+
+
+def test_history_to_filter_applies_to_generated_at(history_client):
+    r = auth(history_client, history_client.get(
+        "/api/v1/forecast/history",
+        params={"site_id": SITE, "to": "2026-10-02T23:59:59+08:00"},
+        headers=HEADERS,
+    ))
+    assert r.status_code == 200, r.text
+    gens = [i["generated_at"] for i in r.json()["items"]]
+    assert gens and all(g <= "2026-10-02T23:59:59+08:00" for g in gens), \
+        f"to tidak diterapkan: {gens}"
+    assert len(gens) == 2, f"to=2026-10-02 harus menyisakan 2 entri, dapat {gens}"
+
+
+def test_history_to_before_from_returns_time_range_invalid(history_client):
+    """§5.3/§6.1: `to < from` → 422 E_TIME_RANGE_INVALID (bukan 200 kosong)."""
+    r = auth(history_client, history_client.get(
+        "/api/v1/forecast/history",
+        params={"site_id": SITE,
+                "from": "2026-10-05T00:00:00+08:00",
+                "to": "2026-10-01T00:00:00+08:00"},
+        headers=HEADERS,
+    ))
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["code"] == "E_TIME_RANGE_INVALID"
+
+
+def test_history_from_naive_returns_tz_required(history_client):
+    """§1.5/§6.1: filter tanpa offset → 422 E_TZ_REQUIRED (zona tidak ditebak)."""
+    r = auth(history_client, history_client.get(
+        "/api/v1/forecast/history",
+        params={"site_id": SITE, "from": "2026-10-01T00:00:00"},
+        headers=HEADERS,
+    ))
+    assert r.status_code == 422, r.text
+    assert r.json()["error"]["code"] == "E_TZ_REQUIRED"
+
+
+def test_history_limit_range_uses_specific_code(history_client):
+    """§6.1: limit di luar 1..100 → 422 E_LIMIT_RANGE (bukan generik)."""
+    for bad in (0, 101, 700):
+        r = auth(history_client, history_client.get(
+            "/api/v1/forecast/history",
+            params={"site_id": SITE, "limit": bad}, headers=HEADERS,
+        ))
+        assert r.status_code == 422, (bad, r.text)
+        assert r.json()["error"]["code"] == "E_LIMIT_RANGE", \
+            f"limit={bad} -> {r.json()['error']['code']}"
+    # Batas sah tetap diterima.
+    for good in (1, 100):
+        r = auth(history_client, history_client.get(
+            "/api/v1/forecast/history",
+            params={"site_id": SITE, "limit": good}, headers=HEADERS,
+        ))
+        assert r.status_code == 200, (good, r.text)
+        assert r.json()["page"]["limit"] == good
+
+
+def test_monitoring_trio_available_together(history_client):
+    """Trio monitoring (§1 tabel endpoint): latest + history + performance
+    semuanya 200 dari state yang sama — inilah yang dipanggil platform."""
+    for path, params in (
+        ("/api/v1/forecast/latest", {"site_id": SITE}),
+        ("/api/v1/forecast/history", {"site_id": SITE, "limit": 5}),
+        ("/api/v1/model/performance", {"site_id": SITE}),
+    ):
+        r = auth(history_client, history_client.get(path, params=params, headers=HEADERS))
+        assert r.status_code == 200, f"{path} -> {r.status_code}: {r.text[:200]}"
 
 
 # ===========================================================================

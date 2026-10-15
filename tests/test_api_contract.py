@@ -263,6 +263,8 @@ def test_history_limit_out_of_range(client, auth_headers):
                    params={"site_id": "PLTS_KUPANG", "limit": 500},
                    headers=auth_headers)
     assert r.status_code == 422
+    # §6.1: kode spesifik untuk client monitoring, bukan generik.
+    assert r.json()["error"]["code"] == "E_LIMIT_RANGE"
 
 
 # ---------------------------------------------------------------------------

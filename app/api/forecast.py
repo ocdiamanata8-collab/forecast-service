@@ -24,7 +24,6 @@ from app import service
 from app.actual_schemas import ActualPoint, ActualResponse
 from app.actuals import ActualsUnavailable
 from app.schemas import (
-    ForecastHistoryQuery,
     ForecastHistoryResponse,
     ForecastPoint,
     ForecastRequest,
@@ -206,19 +205,69 @@ def get_latest(
 )
 def get_history(
     request: Request,
-    q: ForecastHistoryQuery = Depends(),
+    site_id: str = Query(pattern=r"^[A-Z]{2,4}[_A-Z0-9]{2,12}$"),
+    from_: datetime | None = Query(default=None, alias="from"),
+    to: datetime | None = Query(default=None),
+    limit: int = Query(default=20),
+    cursor: str | None = Query(default=None),
+    include_points: bool = Query(default=False),
     _: str = Depends(require_api_key),
 ) -> ForecastHistoryResponse:
-    """§5.3 — riwayat tersimpan, cursor pagination."""
-    assert_known_site(request, q.site_id)
+    """§5.3 — riwayat tersimpan, cursor pagination + filter ``from``/``to``.
+
+    CATATAN REGRESI: parameter memakai ``Query(alias="from")`` EKSPLISIT —
+    sama seperti ``get_actual`` (§5.7). Sebelumnya memakai model ``Depends()``
+    dengan alias Pydantic; FastAPI mencocokkan nama FIELD (``from_``), bukan
+    alias, sehingga ``?from=...`` tidak pernah terisi: filter grafik historis
+    diabaikan diam-diam dan ``to < from`` tidak pernah terdeteksi (balas
+    200 kosong, melanggar §5.3/§6.1).
+    """
+    assert_known_site(request, site_id)
+
+    # §1.5: filter harus tz-aware — FastAPI menerima datetime-naive dari
+    # query string; zona tidak boleh ditebak (pola sama dengan get_actual).
+    for name, value in (("from", from_), ("to", to)):
+        if value is None:
+            continue
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise FastApiError(
+                "E_TZ_REQUIRED",
+                f"{name} must include an explicit UTC offset; "
+                "timezone must not be guessed",
+                status=422,
+                details=[{
+                    "field": name, "issue": "timezone_offset_required",
+                    "value": value.isoformat(),
+                }],
+            )
+    # §5.3: ``to < from`` → 422 E_TIME_RANGE_INVALID (kode §6.1, bukan 200 kosong).
+    if from_ is not None and to is not None:
+        if to.astimezone(timezone.utc) < from_.astimezone(timezone.utc):
+            raise FastApiError(
+                "E_TIME_RANGE_INVALID",
+                "to must be greater than or equal to from",
+                status=422,
+                details=[{"field": "to", "issue": "before_from",
+                          "value": to.isoformat()}],
+            )
+    # §5.3: limit 1..100 → kode spesifik E_LIMIT_RANGE (§6.1). Query int polos
+    # supaya kode error dikendalikan di sini, bukan E_VALIDATION_FAILED generik.
+    if not 1 <= limit <= 100:
+        raise FastApiError(
+            "E_LIMIT_RANGE",
+            "limit must be between 1 and 100",
+            status=422,
+            details=[{"field": "limit", "issue": "out_of_range", "value": limit}],
+        )
+
     store: storage.ForecastStore = request.app.state.store
     try:
         items, next_cursor = store.history(
-            site_id=q.site_id,
-            start=q.from_,
-            end=q.to,
-            limit=q.limit,
-            cursor=q.cursor,
+            site_id=site_id,
+            start=from_,
+            end=to,
+            limit=limit,
+            cursor=cursor,
         )
     except ValueError as exc:
         message = str(exc)
@@ -237,14 +286,14 @@ def get_history(
             generated_at=i.generated_at,
             horizon=i.horizon,
             model_version=i.model_version,
-            forecast=list(i.forecast) if q.include_points else None,
+            forecast=list(i.forecast) if include_points else None,
         )
         for i in items
     ]
     return ForecastHistoryResponse(
         items=summaries,
         page=PageInfo(
-            limit=q.limit,
+            limit=limit,
             next_cursor=next_cursor,
             has_more=next_cursor is not None,
         ),

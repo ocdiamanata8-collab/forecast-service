@@ -255,6 +255,13 @@ bukan #1.
 
 Contoh: `GET /api/v1/forecast/latest?site_id=PLTS_KUPANG`
 
+**Tidak ada parameter `horizon`.** Endpoint ini membaca forecast yang tersimpan
+apa adanya (scheduler menghasilkan horizon 7 — lihat §5.1/§8); horizon
+di-response = horizon yang memang tersimpan. Parameter tambahan yang tidak
+dikenal (mis. `?horizon=24` dari template URL lama) **diabaikan, bukan
+error** — response identik dengan panggilan tanpa parameter itu. Forecast
+on-demand dengan horizon pilihan tetap lewat `POST /forecast` (§5.1).
+
 **Respons: `200 OK`** — objek `ForecastSet` lengkap (§3.2) termasuk `forecast_id`.
 
 ```json
@@ -553,7 +560,7 @@ bukan interval ketidakpastian model.
 | `E_FORBIDDEN` | 403 | semua non-health | Key salah / dicabut |
 | `E_VALIDATION_FAILED` | 422 | POST, query | Body/query gagal validasi schema (bila `details` kosong) |
 | `E_HORIZON_RANGE` | 422 | POST | `horizon` di luar 1..30 (daily) |
-| `E_TZ_REQUIRED` | 422 | POST, actual | `timestamp`/`from`/`to` tanpa offset eksplisit (zone tidak boleh ditebak) |
+| `E_TZ_REQUIRED` | 422 | POST, history, actual | `timestamp`/`from`/`to` tanpa offset eksplisit (zone tidak boleh ditebak) |
 | `E_HISTORY_TOO_SHORT` | 422 | POST | `history` < 30 item |
 | `E_IRREGULAR_SERIES` | 422 | POST | Langkah waktu tidak seragam |
 | `E_DUPLICATE_TIMESTAMP` | 422 | POST | Ada `timestamp` ganda |
@@ -691,6 +698,7 @@ menjadi breaking change nanti.
 
 | Versi | Tanggal | Perubahan |
 |---|---|---|
+| v1.0.0-draft | 2026-10-15 | **Perbaikan filter `GET /forecast/history` (§5.3)** — parameter `from` sebelumnya TIDAK PERNAH diterapkan karena route memakai model Pydantic via `Depends()` dengan alias `from`; FastAPI mencocokkan nama field (`from_`), bukan alias, sehingga `?from=...` diam-diam diabaikan dan filter grafik historis selalu mengembalikan semua data. Route kini memakai `Query(alias="from")` eksplisit (pola identik §5.7). Efek: `to < from` kini benar-benar `422 E_TIME_RANGE_INVALID` (sebelumnya 200 kosong), filter `from`/`to` menyaring `generated_at` sesuai spesifikasi, `from` naive → `422 E_TZ_REQUIRED` (baris §6.1 `E_TZ_REQUIRED` diperluas ke history), dan `limit` di luar 1..100 kini `422 E_LIMIT_RANGE` (kode §6.1; sebelumnya `E_VALIDATION_FAILED` generik — kode spesifik diwajibkan kontrak, jadi perbaikan menuju kontrak, bukan perubahan). **§5.2 diperjelas**: `latest` TIDAK punya parameter `horizon`; membaca forecast tersimpan apa adanya (scheduler horizon 7); parameter tak dikenal diabaikan, bukan error (pola "query tak dikenal diabaikan" konsisten dengan HTTP). Model query `ForecastLatestQuery`/`ForecastHistoryQuery` dihapus (yatim; sumber bug alias). Semua **non-breaking** (§9.2): response field tidak berubah; perilaku yang berubah semuanya menuju spesifikasi yang sudah tertulis. |
 | v1.0.0-draft | 2026-10-14 | **Scheduler latar belakang (Fase 4) diimplementasikan** — §5.1 menyatakan penyimpanan ada di scheduler; kini job itu ada (`app/scheduler.py`): tick pertama saat startup lalu regenerasi per jam (§1.4 / SLA §5.2), memanggil rantai **identik** `service.run_forecast` (§8), history dari tail `data/actuals.csv`. **Gate §10.5** diperbarui: interval sudah diputuskan (3600s; env `SCHEDULER_ENABLED`, `SCHEDULER_INTERVAL_SECONDS`); retensi lintas-restart masih terbuka. Perilaku kontrak tidak berubah — `GET /forecast/latest` kini benar-benar terisi 200 setelah startup (sebelumnya selalu 404 `E_NO_FORECAST` karena scheduler belum pernah dibangun). Tidak ada perubahan field/kode; **non-breaking** (§9.2). |
 | v1.0.0-draft | 2026-10-12 | **§5.5 `evaluated_at` dikoreksi**: kini memakai `generated_at` laporan backtest (waktu asli pembuatan), bukan `site_now()` (waktu request) — sebelumnya membuat "run terakhir" selalu tampak baru tiap request. Nilai `null` bila belum pernah dievaluasi. **Tambah `data_rows`** (§5.5) = `n_rows` laporan, dibedakan dari `n_samples`. **§5.4 tambah `training_rows`** dari `model/artifacts.json`. Semua penambahan field = **non-breaking** (§9.2); koreksi `evaluated_at` = perbaikan kontrak menuju spesifikasi §1.5 (respons sebelumnya bisa mengirim timestamp naive dari laporan lama — parser kini melokalisasi eksplisit ke zona site). |
 | v1.0.0-draft | 2026-10-08 | Tambah `GET /api/v1/forecast/actual` §5.7 sebagai endpoint additive/non-breaking (§9.2): actual W/m2 per titik, timestamp strict, empty range = 200 `points:[]`; data disajikan melalui API, bukan browser CSV. Kode error §6.1 `E_TZ_REQUIRED`/`E_TIME_RANGE_INVALID`/`E_SITE_UNKNOWN`/`E_SERVICE_UNAVAILABLE` diperluas ke actual. |

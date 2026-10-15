@@ -345,43 +345,9 @@ class ErrorEnvelope(StrictSchema):
     error: ErrorPayload
 
 
-class ForecastLatestQuery(StrictSchema):
-    site_id: str = Field(pattern=r"^[A-Z]{2,4}[_A-Z0-9]{2,12}$")
-
-
-class ForecastHistoryQuery(BaseModel):
-    """Query schema for FastAPI dependency injection (extra query keys ignored by HTTP)."""
-    model_config = ConfigDict(
-        extra="ignore", frozen=True, populate_by_name=True, protected_namespaces=()
-    )
-
-    site_id: str = Field(pattern=r"^[A-Z]{2,4}[_A-Z0-9]{2,12}$")
-    from_: datetime | None = Field(default=None, alias="from")
-    to: datetime | None = None
-    limit: int = Field(default=20, ge=1, le=100)
-    cursor: str | None = None
-    include_points: bool = False
-
-    @field_validator("from_", "to", mode="before")
-    @classmethod
-    def date_filters_have_offset(cls, value: object) -> object:
-        if value is None:
-            return value
-        if isinstance(value, str):
-            if not (value.endswith("Z") or (len(value) >= 6 and value[-6] in "+-")):
-                raise ValueError("date filter must include an explicit UTC offset")
-        elif isinstance(value, datetime):
-            _must_be_aware(value, "date filter")
-        return value
-
-    @field_validator("from_", "to")
-    @classmethod
-    def normalize_date_filters(cls, value: datetime | None) -> datetime | None:
-        return None if value is None else value.astimezone(SITE_TZ)
-
-    @model_validator(mode="after")
-    def validate_range(self) -> "ForecastHistoryQuery":
-        if self.from_ is not None and self.to is not None:
-            if self.to.astimezone(timezone.utc) < self.from_.astimezone(timezone.utc):
-                raise ValueError("to must be greater than or equal to from")
-        return self
+#: CATATAN: model query Pydantic untuk latest/history DIHAPUS.
+#: Route memakai ``Query(alias=...)`` eksplisit di signature (pola
+#: ``get_actual``). Model ``Depends()`` dengan alias Pydantic tidak bekerja:
+#: FastAPI mencocokkan nama FIELD (``from_``), bukan alias (``from``) —
+#: ``?from=...`` diam-diam diabaikan. Lihat regresi di
+#: ``tests/test_contract_fields.py::test_history_from_to_filters_apply``.

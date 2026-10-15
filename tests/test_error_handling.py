@@ -268,7 +268,7 @@ def test_all_error_responses_are_envelopes_without_traceback(client):
         ("GET", "/api/v1/forecast/history?site_id=PLTS_KUPANG&cursor=bodoh",
          None, K, 400, "E_CURSOR_INVALID"),
         ("GET", "/api/v1/forecast/history?site_id=PLTS_KUPANG&limit=999",
-         None, K, 422, "E_VALIDATION_FAILED"),
+         None, K, 422, "E_LIMIT_RANGE"),
     ]
     for method, path, payload, headers, status, code in cases:
         if method == "POST":
