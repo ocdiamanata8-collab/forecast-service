@@ -154,6 +154,36 @@ const err = toError({ error: { code: "E_NO_FORECAST", message: "x",
                      request_id: "rid-1" } }, 404);
 check("error: envelope", err.status === 404 && err.code === "E_NO_FORECAST" && err.requestId === "rid-1");
 
+// --- JENDELA HORIZON (anti-menyesatkan): inHorizon per titik ---
+// ts = 2026-01-01, horizon = 3 → valid: 02, 03, 04 Jan (01 = == ts, 05 = lewat).
+const windowRaw = {
+  site_id: "PLTS_KUPANG", ts: "2026-01-01T00:00:00+08:00", horizon: 3,
+  generated_at: "2025-12-31T09:00:00+08:00", model_version: "v1.0",
+  forecast: [
+    { forecast_time: "2026-01-01T00:00:00+08:00", forecast_value: 100, model_version: "v1.0" }, // == ts
+    { forecast_time: "2026-01-02T00:00:00+08:00", forecast_value: 101, model_version: "v1.0" }, // valid
+    { forecast_time: "2026-01-04T00:00:00+08:00", forecast_value: 103, model_version: "v1.0" }, // batas valid
+    { forecast_time: "2026-01-05T00:00:00+08:00", forecast_value: 104, model_version: "v1.0" }, // lewat horizon
+    { forecast_time: "2025-12-30T00:00:00+08:00", forecast_value: 98,  model_version: "v1.0" }, // sebelum ts
+  ],
+};
+const w = toForecast(windowRaw);
+const byWhen = Object.fromEntries(w.points.map(p => [p.when.slice(0, 10), p.inHorizon]));
+check("horizon: validUntil terbentuk", w.validUntil != null);
+check("horizon: validUntil memakai tanggal ZONA SITE (bukan shift UTC)",
+  w.validUntil === "2026-01-04",
+  w.validUntil);
+check("horizon: titik == ts disembunyikan", byWhen["2026-01-01"] === false);
+check("horizon: titik ts+1 hingga ts+horizon tampil", byWhen["2026-01-02"] === true && byWhen["2026-01-04"] === true);
+check("horizon: titik lewat horizon disembunyikan", byWhen["2026-01-05"] === false);
+check("horizon: titik sebelum ts disembunyikan", byWhen["2025-12-30"] === false);
+check("horizon: points TETAP memuat semua titik", w.points.length === 5);
+// Metadata hilang → semua true (degradasi aman, tidak menyembunyikan).
+const noMeta = toForecast({ site_id: "X", forecast: [
+  { forecast_time: "2026-01-09T00:00:00+08:00", forecast_value: 5 }] });
+check("horizon: tanpa ts/horizon → semua inHorizon true", noMeta.points[0].inHorizon === true);
+check("horizon: tanpa ts/horizon → validUntil null", noMeta.validUntil === null);
+
 // --- TOLERANSI DRIFT: field kontrak diganti nama → TIDAK melempar ---
 let threw = false;
 try {

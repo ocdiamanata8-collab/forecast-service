@@ -334,6 +334,9 @@
       <span><i class="legend-line forecast-line"></i> Forecast</span>
       <span><i class="legend-area"></i> Selisih |aktual−forecast| (error absolut, bukan interval ketidakpastian)</span>
     </div>
+    <!-- Label meta garis forecast: model version + waktu pembuatan (permintaan
+         integrasi monitoring). Diisi via textContent — nilai API tidak tepercaya. -->
+    <p id="chartMeta" class="muted" aria-live="polite" hidden></p>
     <div id="chartEmpty" class="chart-empty" hidden></div>
     <div id="chartViewport" class="chart-viewport">
       <svg id="comparisonChart" class="comparison-chart" viewBox="0 0 900 360"
@@ -699,8 +702,9 @@ async function runManual() {
           `${r.data.site_id}`);
     audit("horizon di request == horizon di respons", r.data.horizon === body.horizon,
           `${r.data.horizon}`);
-    // Grafik aktual + forecast: data aktual juga lewat adapter sebelum rendering.
-    loadActualsAndDraw(forecast.points, body.site_id).catch(err => {
+    // Grafik aktual + forecast: data aktual juga lewat adapter sebelum
+    // rendering; model forecast penuh diteruskan (meta + jendela horizon).
+    loadActualsAndDraw(forecast, body.site_id).catch(err => {
       showChartEmpty(`Data aktual gagal diambil: ${err.message}`);
       audit("actual API: diambil", false, err.message);
       renderAudit();
@@ -808,6 +812,13 @@ async function loadLatest() {
     addLog("GET /latest -> 200");
     auditForecastPayload(r.data);
     renderAudit();
+    // Forecast tersimpan (scheduler) juga tampil sebagai garis pembanding
+    // di grafik §3 — inilah yang dibaca platform monitoring.
+    loadActualsAndDraw(forecast, s).catch(err => {
+      showChartEmpty(`Data aktual gagal diambil: ${err.message}`);
+      audit("actual API: diambil", false, err.message);
+      renderAudit();
+    });
   } else {
     setPill("hLatest", false, String(r.status));
     renderContext(null);
@@ -917,6 +928,9 @@ function showChartEmpty(message) {
   $("chartSummary").textContent = "";
   $("comparisonFigure").hidden = false;
   $("chartTableDetails").hidden = true;
+  // chartMeta TIDAK dihapus di sini: label model+generated_at tetap relevan
+  // meski garis tidak bisa digambar (mis. tanpa overlap aktual) — penonton
+  // perlu tahu model mana yang dibicarakan. Diisi/dihapus oleh drawComparisonChart.
 }
 
 function clearSvg(group) {
@@ -932,6 +946,7 @@ function showChartTooltip(index, focus = false) {
   const x = row.x;
   const yA = row.actual == null ? null : row.yActual;
   const yF = row.yForecast;
+  const forecastShown = row.inHorizon !== false; // titik di luar horizon: tak ada titik forecast
 
   const line = $("crosshairLine");
   line.setAttribute("x1", x); line.setAttribute("x2", x);
@@ -941,7 +956,8 @@ function showChartTooltip(index, focus = false) {
   ca.hidden = yA == null;
   if (yA != null) { ca.setAttribute("cx", x); ca.setAttribute("cy", yA); }
   const cf = $("crosshairForecast");
-  cf.setAttribute("cx", x); cf.setAttribute("cy", yF);
+  cf.hidden = !forecastShown;
+  if (forecastShown) { cf.setAttribute("cx", x); cf.setAttribute("cy", yF); }
 
   tip.innerHTML = "";
   const date = document.createElement("div");
@@ -962,8 +978,13 @@ function showChartTooltip(index, focus = false) {
     r.append(k, v); tip.appendChild(r);
   };
   addRow("Aktual", yA == null ? "tidak tersedia" : `${row.actual.toFixed(3)} W/m²`, "var(--series-actual)");
-  addRow("Forecast", `${row.forecast.toFixed(3)} W/m²`, "var(--series-forecast)");
-  addRow("Error absolut", yA == null ? "tidak dapat dihitung" : `${Math.abs(row.actual - row.forecast).toFixed(3)} W/m²`);
+  // Titik di luar jendela horizon: forecast TIDAK ditampilkan — nilai itu
+  // tidak di-backing model dan menampilkannya akan menyesatkan.
+  addRow("Forecast", row.inHorizon ? `${row.forecast.toFixed(3)} W/m²`
+    : "di luar jendela horizon (tidak ditampilkan)", row.inHorizon ? "var(--series-forecast)" : null);
+  addRow("Error absolut", (yA == null || !row.inHorizon)
+    ? (row.inHorizon ? "tidak dapat dihitung" : "— (forecast di luar horizon)")
+    : `${Math.abs(row.actual - row.forecast).toFixed(3)} W/m²`);
 
   const svgRect = svg.getBoundingClientRect();
   const scaleX = svgRect.width / 900;
@@ -982,8 +1003,12 @@ function hideChartTooltip() {
   chartActiveIndex = -1;
 }
 
-function drawComparisonChart(forecastPoints, actualResponse) {
-  chartForecastPoints = forecastPoints || [];
+function drawComparisonChart(forecastModel, actualResponse) {
+  // forecastModel = model adapter lengkap ({ts, horizon, validUntil,
+  // generatedAt, modelVersion, points:[{when,value,inHorizon}]}) sehingga
+  // garis forecast boleh dibatasi jendela horizon dan diberi label meta.
+  const forecastPoints = (forecastModel && forecastModel.points) || [];
+  chartForecastPoints = forecastPoints;
   const svg = $("comparisonChart");
   const plot = { left: 66, right: 876, top: 20, bottom: 310 };
   const W = plot.right - plot.left, H = plot.bottom - plot.top;
@@ -998,6 +1023,27 @@ function drawComparisonChart(forecastPoints, actualResponse) {
   $("forecastPath").setAttribute("d", "");
   hideChartTooltip();
 
+  // Label meta garis forecast (permintaan integrasi monitoring): model
+  // version + waktu pembuatan + jendela horizon. textContent saja —
+  // nilai API tidak tepercaya (jangan pernah innerHTML).
+  const meta = $("chartMeta");
+  if (forecastModel && (forecastModel.modelVersion || forecastModel.generatedAt)) {
+    const parts = ["Forecast"];
+    if (forecastModel.modelVersion) parts.push(`model ${forecastModel.modelVersion}`);
+    const built = fmtStamp(forecastModel.generatedAt);
+    if (built) parts.push(`dibuat ${built}`);
+    if (forecastModel.horizon) parts.push(`horizon ${forecastModel.horizon} hari`);
+    if (forecastModel.validUntil) {
+      const until = fmtStamp(forecastModel.validUntil);
+      if (until) parts.push(`valid s.d. ${until.slice(0, 10)}`);
+    }
+    meta.textContent = parts.join(" · ");
+    meta.hidden = false;
+  } else {
+    meta.textContent = "";
+    meta.hidden = true;
+  }
+
   const actualMap = new Map((actualResponse.points || []).map(p => [
     new Date(p.when).getTime(), p.value
   ]));
@@ -1005,29 +1051,39 @@ function drawComparisonChart(forecastPoints, actualResponse) {
     timestamp: p.when,
     time: new Date(p.when).getTime(),
     forecast: p.value,
+    // Guard anti-menyesatkan: titik di luar jendela horizon TIDAK digambar
+    // sebagai garis (bukan di-backing model). Adapter menghitung; bila
+    // metadata hilang, adapter mengembalikan true (degradasi aman).
+    inHorizon: p.inHorizon !== false,
     actual: actualMap.has(new Date(p.when).getTime())
       ? actualMap.get(new Date(p.when).getTime()) : null,
   })).sort((a, b) => a.time - b.time);
 
-  const comparable = parsed.filter(p => p.actual != null &&
+  const hiddenByHorizon = parsed.filter(p => !p.inHorizon).length;
+  const visible = parsed.filter(p => p.inHorizon);
+  const comparable = visible.filter(p => p.actual != null &&
     Number.isFinite(p.actual) && Number.isFinite(p.forecast));
-  const gaps = parsed.length - comparable.length;
+  const gaps = visible.length - comparable.length;
+  const horizonNote = hiddenByHorizon
+    ? ` · ${hiddenByHorizon} titik di luar jendela horizon disembunyikan dari garis`
+    : "";
   $("chartSummary").textContent = comparable.length
-    ? `${comparable.length}/${parsed.length} tanggal cocok tepat · ${gaps} tanggal tanpa aktual · ` +
-      `band = selisih absolut (bukan interval ketidakpastian) · sumber: ${actualResponse.source}`
-    : `${parsed.length} tanggal forecast · tidak ada data aktual pada rentang ini · ` +
-      `aktual tersedia 2023-01-01 sampai 2025-12-31 · band error hanya ada pada tanggal yang cocok tepat`;
+    ? `${comparable.length}/${visible.length} tanggal cocok tepat · ${gaps} tanggal tanpa aktual · ` +
+      `band = selisih absolut (bukan interval ketidakpastian) · sumber: ${actualResponse.source}${horizonNote}`
+    : `${visible.length} tanggal forecast · tidak ada data aktual pada rentang ini · ` +
+      `aktual tersedia 2023-01-01 sampai 2025-12-31 · band error hanya ada pada tanggal yang cocok tepat${horizonNote}`;
 
   if (!comparable.length) {
     showChartEmpty(
       `Tidak ada aktual yang cocok tepat dengan tanggal forecast ini. ` +
-      `Tidak ada interpolasi atau pencocokan tanggal terdekat. Sumber actual: ${actualResponse.source}.`
+      `Tidak ada interpolasi atau pencocokan tanggal terdekat. Sumber actual: ${actualResponse.source}.` +
+      (hiddenByHorizon ? ` (${hiddenByHorizon} titik forecast di luar jendela horizon disembunyikan.)` : "")
     );
     renderComparisonTable(parsed);
     return;
   }
 
-  const allValues = parsed.flatMap(p => [p.forecast, ...(p.actual == null ? [] : [p.actual])]);
+  const allValues = visible.flatMap(p => [p.forecast, ...(p.actual == null ? [] : [p.actual])]);
   let ymin = Math.min(...allValues), ymax = Math.max(...allValues);
   if (ymax === ymin) { ymax += 1; ymin -= 1; }
   const pad = (ymax - ymin) * 0.12;
@@ -1059,8 +1115,18 @@ function drawComparisonChart(forecastPoints, actualResponse) {
     $("chartAxes").appendChild(label);
   }
 
-  // forecast path: all forecast dates (no missing forecast points expected).
-  const fcmd = parsed.map((p,i) => `${i ? "L" : "M"}${x(i).toFixed(2)},${y(p.forecast).toFixed(2)}`).join(" ");
+  // forecast path: hanya titik inHorizon, dipecah pada batas (jangan
+  // menjembatani titik tersembunyi — itu akan kembali menyesatkan).
+  const fSegments = [], fCur = [];
+  parsed.forEach((p, i) => {
+    if (!p.inHorizon || !Number.isFinite(p.forecast)) {
+      if (fCur.length) fSegments.push(fCur);
+      fCur = [];
+    } else fCur.push({ p, i });
+  });
+  if (fCur.length) fSegments.push(fCur);
+  const fcmd = fSegments.map(seg => seg.map((pt, j) =>
+    `${j ? "L" : "M"}${x(pt.i).toFixed(2)},${y(pt.p.forecast).toFixed(2)}`).join(" ")).join(" ");
   $("forecastPath").setAttribute("d", fcmd);
 
   // Actual line and error band: split at missing actuals; no bridge over gaps.
@@ -1076,17 +1142,24 @@ function drawComparisonChart(forecastPoints, actualResponse) {
     `${j ? "L" : "M"}${x(p.i).toFixed(2)},${y(p.actual).toFixed(2)}`).join(" ")).join(" ");
   $("actualPath").setAttribute("d", actualD);
 
+  // Band error hanya pada titik yang TAMPIL di kedua garis.
   for (const seg of actualSegments) {
-    if (seg.length >= 2) {
-      const top = seg.map(p => `${x(p.i).toFixed(2)},${y(p.actual).toFixed(2)}`);
-      const bottom = [...seg].reverse().map(p => `${x(p.i).toFixed(2)},${y(p.forecast).toFixed(2)}`);
+    const bandSeg = seg.filter(p => p.inHorizon);
+    if (bandSeg.length >= 2) {
+      const top = bandSeg.map(p => `${x(p.i).toFixed(2)},${y(p.actual).toFixed(2)}`);
+      const bottom = [...bandSeg].reverse().map(p => `${x(p.i).toFixed(2)},${y(p.forecast).toFixed(2)}`);
       $("chartBand").appendChild(svgEl("polygon", {points:top.concat(bottom).join(" ")}));
     }
+    // Marker aktual TETAP di semua titik — itu pengamatan nyata, bukan
+    // garis forecast. Yang disembunyikan hanya sisi forecast-nya, sehingga
+    // grafik menunjukkan: aktual terus, forecast berhenti di batas horizon.
     for (const p of seg) {
       $("chartMarkers").appendChild(svgEl("circle", {cx:x(p.i),cy:y(p.actual),r:4.5,class:"marker actual-marker"}));
     }
   }
+  // Marker forecast hanya untuk titik yang ikut digambar.
   for (let i = 0; i < parsed.length; i++) {
+    if (!parsed[i].inHorizon) continue;
     $("chartMarkers").appendChild(svgEl("rect", {x:x(i)-4,y:y(parsed[i].forecast)-4,width:8,height:8,rx:1,class:"marker forecast-marker"}));
   }
 
@@ -1105,14 +1178,16 @@ function renderComparisonTable(points) {
   for (const p of points) {
     const tr = document.createElement("tr");
     const vals = [p.timestamp, p.actual == null ? "—" : p.actual.toFixed(3),
-                  p.forecast.toFixed(3), p.actual == null ? "—" : Math.abs(p.actual-p.forecast).toFixed(3)];
+                  p.inHorizon ? p.forecast.toFixed(3) : "—",
+                  p.inHorizon && p.actual != null ? Math.abs(p.actual-p.forecast).toFixed(3) : "—"];
     vals.forEach((v,i) => { const td=document.createElement("td"); td.textContent=v; if(i>0)td.className="num"; tr.appendChild(td); });
     tbody.appendChild(tr);
   }
 }
 
-async function loadActualsAndDraw(forecastPoints, siteId) {
-  if (!forecastPoints || !forecastPoints.length) return;
+async function loadActualsAndDraw(forecastModel, siteId) {
+  const forecastPoints = (forecastModel && forecastModel.points) || [];
+  if (!forecastPoints.length) return;
   const times = forecastPoints.map(p => p.when).sort();
   const params = new URLSearchParams({site_id:siteId, from:times[0], to:times[times.length-1]});
   addLog("GET /forecast/actual — mengambil data aktual untuk grafik");
@@ -1135,7 +1210,7 @@ async function loadActualsAndDraw(forecastPoints, siteId) {
   audit("aktual dicocokkan tepat per timestamp (tanpa interpolasi)", true,
         `${overlap}/${forecastTimes.size} tanggal overlap`);
   renderAudit();
-  drawComparisonChart(forecastPoints, toActualSeries(a)); // rendering: model internal
+  drawComparisonChart(forecastModel, toActualSeries(a)); // rendering: model internal
 }
 
 function bindChartInteractions() {

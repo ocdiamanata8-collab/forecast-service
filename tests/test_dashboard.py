@@ -207,6 +207,27 @@ def test_dashboard_carries_context_field_audit():
         assert f'"{field}"' in m.group(1), f"{field} tidak diaudit"
 
 
+def test_chart_labels_forecast_meta_and_hides_out_of_horizon():
+    """Grafik pemantauan: (a) label meta model+generated_at, (b) titik di luar
+    jendela horizon disembunyikan dari garis — permintaan integrasi monitoring.
+    """
+    with TestClient(create_app()) as c:
+        html = c.get("/").text
+    # (a) elemen label meta ada dan diisi dari adapter (textContent).
+    assert 'id="chartMeta"' in html, "elemen label meta grafik tidak ada"
+    assert "dibuat" in html and "horizon" in html, \
+        "label meta tidak memuat waktu pembuatan + horizon"
+    # (b) garis forecast memakai jendela inHorizon, bukan semua titik.
+    assert "inHorizon" in html, \
+        "grafik tidak memakai guard jendela horizon (inHorizon) — titik di luar horizon ikut digambar"
+    assert "fSegments" in html, \
+        "garis forecast tidak dipecah pada batas horizon (bisa menjembatani titik tersembunyi)"
+    # (c) forecast tersimpan (scheduler/latest) juga memicu grafik pembanding.
+    load_latest = html[html.index("async function loadLatest"):html.index("$(\"latestBtn\")")]
+    assert "loadActualsAndDraw" in load_latest, \
+        "loadLatest tidak mengisi grafik — forecast tersimpan tidak tampil sebagai garis pembanding"
+
+
 def test_dashboard_does_not_embed_forecast_data():
     """Halaman tidak boleh menyimpan angka forecast — datanya harus dari API.
 

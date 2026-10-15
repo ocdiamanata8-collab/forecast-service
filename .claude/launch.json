@@ -4,16 +4,12 @@
     {
       "name": "forecast-service",
       "runtimeExecutable": "python",
-      "runtimeArgs": [
-        "-m",
-        "uvicorn",
-        "app.main:app",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "8000"
-      ],
-      "port": 8000
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"],
+      "port": 8000,
+      "env": {
+        "API_KEYS": "dev-key-change-me-0123456789",
+        "SCHEDULER_ENABLED": "true"
+      }
     }
   ]
 }

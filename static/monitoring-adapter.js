@@ -43,26 +43,65 @@ const sortPoints = (pts) =>
 /**
  * POST /forecast (§5.1) & GET /forecast/latest (§5.2) → format internal.
  * Konteks (site_id, generated_at, unit, model_version) ikut diterjemahkan.
+ *
+ * Jendela horizon (anti-menyesatkan): tiap poin membawa ``inHorizon`` —
+ * ``true`` hanya bila ``ts < when <= ts + horizon hari``. Titik di luar
+ * jendela tidak di-backing model (drift data / payload cacat) dan TIDAK
+ * boleh digambar sebagai garis forecast. Bila ``ts``/``horizon`` tidak
+ * sah, semua titik dianggap ``true`` — degradasi aman, tanpa disembunyikan.
  */
 export function toForecast(raw) {
+  const tsValue = pick(raw, "ts") ?? null;
+  const horizon = num(pick(raw, "horizon"));
+  const tsMs = Date.parse(tsValue);
+  const hasWindow = typeof tsValue === "string" &&
+    Number.isFinite(tsMs) && horizon !== null && horizon > 0;
+  // validUntil HARUS memakai offset yang sama dengan ts (bukan UTC-Z).
+  // Format Z (toISOString) menggeser tanggal di zona +08:00 — ts 2025-12-31
+  // 00:00+08:00 + 7 hari = 2026-01-07T00:00+08:00, tapi "…T16:00Z" tampak
+  // seperti 06-01. Kekeliruan zona persis yang diperangi kontrak §1.5.
+  const offsetMatch = typeof tsValue === "string"
+    ? tsValue.match(/([+-])(\d{2}):?(\d{2})$/) : null;
+  const offsetMs = offsetMatch
+    ? (offsetMatch[1] === "-" ? -1 : 1) *
+      (Number(offsetMatch[2]) * 3600 + Number(offsetMatch[3]) * 60) * 1000
+    : null;
+  const validUntilMs = hasWindow ? tsMs + horizon * 86400000 : null;
+  const validUntil = hasWindow
+    ? (offsetMs != null
+        // Shift ke zona ts, lalu ambil bagian tanggal ISO-nya.
+        ? new Date(validUntilMs + offsetMs).toISOString().slice(0, 10)
+        : new Date(validUntilMs).toISOString())
+    : null;
   const points = (Array.isArray(pick(raw, "forecast")) ? raw.forecast : [])
-    .map((p) => ({
-      when: pick(p, "forecast_time") ?? null,
-      value: num(pick(p, "forecast_value")),
-      modelVersion: pick(p, "model_version") ?? null,
-    }))
+    .map((p) => {
+      const when = pick(p, "forecast_time") ?? null;
+      const value = num(pick(p, "forecast_value"));
+      const whenMs = when == null ? NaN : Date.parse(when);
+      const inHorizon = !hasWindow || !Number.isFinite(whenMs)
+        ? true  // metadata hilang/rusak: jangan menyembunyikan titik
+        : whenMs > tsMs && whenMs <= validUntilMs;
+      return {
+        when,
+        value,
+        modelVersion: pick(p, "model_version") ?? null,
+        inHorizon,
+      };
+    })
     .filter((p) => p.when && p.value !== null);
   return {
     site: pick(raw, "site_id") ?? null,
     target: pick(raw, "target") ?? null,
     unit: pick(raw, "unit") ?? null,
     timezone: pick(raw, "timezone") ?? null,
-    horizon: num(pick(raw, "horizon")),
+    horizon,
     generatedAt: pick(raw, "generated_at") ?? null,
-    ts: pick(raw, "ts") ?? null,
+    ts: tsValue,
     modelVersion: pick(raw, "model_version") ?? null,
     order: pick(raw, "order") ?? null,
     forecastId: pick(raw, "forecast_id") ?? null,
+    /** Batas akhir jendela horizon (ISO) atau null bila metadata tidak sah. */
+    validUntil,
     points: sortPoints(points),
   };
 }
