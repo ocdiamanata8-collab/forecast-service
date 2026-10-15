@@ -1074,9 +1074,26 @@ function drawComparisonChart(forecastModel, actualResponse) {
       `aktual tersedia 2023-01-01 sampai 2025-12-31 · band error hanya ada pada tanggal yang cocok tepat${horizonNote}`;
 
   if (!comparable.length) {
+    // Jelaskan MENGAPA tidak ada overlap — "tidak ada yang cocok" saja
+    // tidak bisa dibedakan dari endpoint/timezone rusak. Tampilkan rentang
+    // kedua sisi; bandingkan sebagai string ISO (YYYY-MM-DD terurut
+    // leksikografis). Kasus paling umum: forecast (hasil scheduler) berada
+    // SETELAH akhir dataset aktual — belum ada pengamatan untuk dibandingkan.
+    const aTimes = (actualResponse.points || []).map(p => String(p.when).slice(0, 10)).sort();
+    const aFrom = aTimes[0] || "–", aTo = aTimes[aTimes.length - 1] || "–";
+    const fFrom = parsed[0] ? parsed[0].timestamp.slice(0, 10) : "–";
+    const fTo = parsed.length ? parsed[parsed.length - 1].timestamp.slice(0, 10) : "–";
+    let reason = "";
+    if (aTimes.length && parsed.length && fFrom > aTo) {
+      reason = ` Forecast ${fFrom}…${fTo} berada SETELAH akhir data aktual ${aTo} — ` +
+        `belum ada pengamatan untuk tanggal itu, jadi tidak ada yang bisa dibandingkan.`;
+    } else if (aTimes.length && parsed.length && fTo < aFrom) {
+      reason = ` Forecast ${fFrom}…${fTo} berada SEBELUM awal data aktual ${aFrom}.`;
+    }
     showChartEmpty(
-      `Tidak ada aktual yang cocok tepat dengan tanggal forecast ini. ` +
+      `Tidak ada tanggal sama antara forecast (${fFrom}…${fTo}) dan aktual (${aFrom}…${aTo}). ` +
       `Tidak ada interpolasi atau pencocokan tanggal terdekat. Sumber actual: ${actualResponse.source}.` +
+      reason +
       (hiddenByHorizon ? ` (${hiddenByHorizon} titik forecast di luar jendela horizon disembunyikan.)` : "")
     );
     renderComparisonTable(parsed);
@@ -1204,13 +1221,30 @@ async function loadActualsAndDraw(forecastModel, siteId) {
   audit("actual API: schema + unit sesuai", a.unit === "W/m2" && a.timezone === "Asia/Makassar" &&
         Array.isArray(a.points) && a.n === a.points.length,
         `n=${a.n}, unit=${a.unit}, tz=${a.timezone}`);
+
+  // Window forecast tidak punya aktual sama sekali → fetch rentang penuh
+  // SEKALI (jalur langka) supaya pesan "tidak ada yang cocok" bisa
+  // menyebut batas sebenarnya dataset, bukan "–". Perilaku pencocokan TIDAK
+  // berubah: tanggal di luar window tidak mungkin sama dengan titik
+  // forecast yang berada di dalam window, jadi hasil overlap tetap nol.
+  let aForChart = a;
+  if (a.n === 0) {
+    const wide = new URLSearchParams({
+      site_id: siteId, from: "2000-01-01T00:00:00+08:00", to: "2100-01-01T00:00:00+08:00",
+    });
+    const rw = await api(`/api/v1/forecast/actual?${wide.toString()}`, { auth: true });
+    if (rw.status === 200 && rw.data && rw.data.n > 0) aForChart = rw.data;
+  }
   const forecastTimes = new Set(forecastPoints.map(p=>new Date(p.when).getTime()));
   const actualTimes = new Set(a.points.map(p=>new Date(p.timestamp).getTime()));
   const overlap = [...forecastTimes].filter(t=>actualTimes.has(t)).length;
   audit("aktual dicocokkan tepat per timestamp (tanpa interpolasi)", true,
         `${overlap}/${forecastTimes.size} tanggal overlap`);
   renderAudit();
-  drawComparisonChart(forecastModel, toActualSeries(a)); // rendering: model internal
+  // Pakai aForChart (mungkin rentang penuh) hanya untuk MENAMPILKAN batas
+  // dataset di pesan kosong; overlap tetap dihitung dari window (a) —
+  // tanggal di luar window tidak bisa sama dengan titik forecast di dalamnya.
+  drawComparisonChart(forecastModel, toActualSeries(aForChart)); // rendering: model internal
 }
 
 function bindChartInteractions() {
