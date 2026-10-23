@@ -295,6 +295,36 @@ def test_dashboard_has_error_rendering_for_api_errors():
     assert "Traceback" not in html
 
 
+def test_dashboard_shows_service_unavailable_not_stale_values():
+    """Uji E2E outage: saat service mati, dashboard harus menampilkan
+    keadaan itu dengan JELAS — bukan angka/sertifikat hijau basi.
+
+    Tiga celah yang pernah terjadi (direproduksi saat uji siklus E2E):
+    1. api() melempar → cabang else tak pernah jalan → pill lama tertinggal.
+    2. showErr status 0 dianggap sukses (status < 400) → error disembunyikan.
+    3. refreshSummary tak mereset kpiStatus → "GO" basi tertinggal.
+    """
+    with TestClient(create_app()) as c:
+        html = c.get("/").text
+    # 1. api() non-melempar: fetch gagal → {status:0, envelope transport}.
+    assert "catch (_)" in html and '"E_SERVICE_UNAVAILABLE"' in html, \
+        "api() harus menangkap fetch gagal dan mengembalikan status 0"
+    assert "service tidak terjangkau" in html, \
+        "pesan outage harus eksplisit 'service tidak terjangkau'"
+    # 2. showErr TIDAK menganggap status 0 sebagai sukses.
+    assert "r.status >= 200 && r.status < 400" in html, \
+        "showErr harus hanya membersihkan error pada respons sukses 2xx/3xx"
+    # 3. kpiStatus ikut di-reset saat performance gagal.
+    assert "Performance tidak terbaca" in html, \
+        "kpiStatus harus di-reset saat performance gagal (bukan GO basi)"
+    # 4. health tidak meninggalkan versi/uptime basi saat gagal.
+    rh = html[html.index("async function refreshHealth"):html.index("/* ---------------- Grafik actual vs forecast")]
+    assert rh.count("–") >= 2, "refreshHealth harus mengisi '–' pada hVer/hUp saat gagal"
+    # 5. grafik + meta basi dibersihkan saat service tidak terjangkau.
+    assert "clearComparisonState" in html, \
+        "helper pembersih grafik+meta saat outage tidak ada"
+
+
 def test_root_error_when_template_missing(tmp_path, monkeypatch):
     """Bila template hilang → 404 envelope §3.3, bukan 500 / stack trace."""
     import app.main as main_mod
