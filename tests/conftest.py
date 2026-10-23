@@ -21,6 +21,19 @@ if str(ROOT) not in sys.path:
 # secara eksplisit. Production tetap default aktif (SCHEDULER_ENABLED=true).
 os.environ.setdefault("SCHEDULER_ENABLED", "false")
 
+# DATABASE_URL DIANGKAT dari environment selama suite: fixture ``client``
+# (lifespan) akan memilih store in-memory — suite harus hermetic. Bila env ini
+# dibiarkan aktif, setiap TestClient menulis ke database BERSAMA (scheduler
+# tiap test menulis batch, fixture menyuntik data) → test lain melihat baris
+# orang lain (contoh nyata: test_scheduler_disabled_via_env menghitung 8 baris
+# dari test sebelumnya). Nilainya disimpan di TEST_DATABASE_URL dan hanya
+# dipakai eksplisit oleh tests/test_db_store.py (store DB dibangun langsung,
+# bukan lewat lifespan).
+TEST_DATABASE_URL: str | None = os.environ.pop("DATABASE_URL", None)
+if TEST_DATABASE_URL:
+    # Dipakai tests/test_db_store.py (satu-satunya test yang butuh DB live).
+    os.environ["TEST_DATABASE_URL"] = TEST_DATABASE_URL
+
 # Set API key di environment SEBELUM lifespan berjalan. Production tidak
 # punya fallback key — tests harus mengaturnya sendiri.
 DEMO_KEY = "dev-key-change-me-0123456789"

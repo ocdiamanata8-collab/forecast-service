@@ -206,23 +206,62 @@ def tick(
     """Proses semua site sekali. Kegagalan per-site dicatat, tidak dibuang.
 
     Mengembalikan ``forecast_id`` yang berhasil disimpan (untuk log/uji).
+
+    6·03 / 7·04 — jejak run: bila store mengimplementasikan
+    ``record_run`` (penyedia DB), SETIAP run ditulis ke ``forecast_run``:
+    sukses (forecast_id, generated_at, rows_saved) ATAU gagal (error).
+    Tanpa itu kegagalan hanya hidup di log proses — hilang saat restart,
+    dan "run gagal diam-diam" tak terdeteksi. Penyedia in-memory tanpa
+    ``record_run`` dibiarkan tanpa catatan (PoC).
     """
     saved: list[str] = []
     for site_id in sites:
+        started = now or datetime.now(tz=SITE_TZ)
         try:
             item = run_site_forecast(store, site_id, now=now)
         except asyncio.CancelledError:  # pragma: no cover - shutdown path
             raise
-        except Exception:
+        except Exception as exc:
             log.exception("scheduler tick gagal untuk site=%s — lanjut ke site berikut", site_id)
+            _record_run(
+                store,
+                site_id=site_id,
+                started_at=started,
+                finished_at=datetime.now(tz=SITE_TZ),
+                status="failed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
             continue
         saved.append(item.forecast_id)
+        _record_run(
+            store,
+            site_id=site_id,
+            started_at=started,
+            finished_at=datetime.now(tz=SITE_TZ),
+            status="ok",
+            rows_saved=len(item.forecast),
+            forecast_id=item.forecast_id,
+            generated_at=item.generated_at,
+            model_version=item.model_version,
+        )
         log.info(
             "scheduler menyimpan forecast site=%s id=%s horizon=%s generated_at=%s",
             item.site_id, item.forecast_id, item.horizon,
             item.generated_at.isoformat(),
         )
     return saved
+
+
+def _record_run(store: ForecastStore, **kwargs) -> None:
+    """Catat run bila store mendukungnya (``record_run``); tanpa efek samping
+    untuk penyedia in-memory. Kegagalan PENCATATAN tidak boleh menjatuhkan
+    tick — sudah ditangani di dalam implementasi DB."""
+    recorder = getattr(store, "record_run", None)
+    if callable(recorder):
+        try:
+            recorder(**kwargs)
+        except Exception:  # pragma: no cover - defensif ganda
+            log.exception("run log gagal dicatat untuk site=%s", kwargs.get("site_id"))
 
 
 async def scheduler_loop(

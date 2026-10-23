@@ -34,6 +34,9 @@ from app.api import forecast as forecast_api
 from app.api import health as health_api
 from app.api import model as model_api
 from app.artifacts import ArtifactError, load_artifacts
+from app import backfill
+from app import retention
+from app.db import DatabaseUnavailable, PostgresForecastStore
 from app.scheduler import enabled_from_env, interval_from_env, scheduler_loop, tick as scheduler_tick
 from app.security import (
     FastApiError,
@@ -42,7 +45,7 @@ from app.security import (
     parse_api_keys,
     request_id_of,
 )
-from app.storage import InMemoryForecastStore
+from app.storage import ForecastStore, InMemoryForecastStore
 from app.version import VersionFileError, assert_sane
 
 log = logging.getLogger("app.main")
@@ -101,9 +104,28 @@ def _coerce_detail_value(raw: object) -> str | int | float | bool | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Siapkan penyimpanan + API key sekali saat proses hidup."""
+    """Siapkan penyimpanan + API key sekali saat proses hidup.
+
+    Fase 6 · 6·02: ``DATABASE_URL`` di-set → ``PostgresForecastStore``
+    (latest/history membaca baris DB); tanpa env → bawaan in-memory (PoC).
+    DSN ada tapi DB tak terjangkau → ``DatabaseUnavailable`` GAGAL FAST —
+    tidak ada fallback diam-diam ke memori (lihat ``app/db.py``).
+    """
     app.state.started_at = time.monotonic()
-    app.state.store = InMemoryForecastStore()
+    store: ForecastStore
+    dsn = os.environ.get("DATABASE_URL", "").strip()
+    if dsn:
+        # 6·05 — kredensial baca terpisah bila platform menyediakannya:
+        # dashboard cukup dengan hak baca; tulis tetap lewat DATABASE_URL.
+        read_dsn = os.environ.get("DATABASE_READONLY_URL", "").strip() or None
+        store = PostgresForecastStore(dsn, read_dsn=read_dsn)
+        app.state.store_backend = "postgres"
+        if read_dsn:
+            log.info("store: pool terpisah — baca (DATABASE_READONLY_URL) + tulis (DATABASE_URL)")
+    else:
+        store = InMemoryForecastStore()
+        app.state.store_backend = "memory"
+    app.state.store = store
     app.state.performance_cache = {}
 
     # Root handler SEBELUM log pertama: tanpa ini log INFO app (usage log,
@@ -194,6 +216,43 @@ async def lifespan(app: FastAPI):
             "scheduler aktif: site=%s interval=%ss",
             sites, app.state.scheduler_interval,
         )
+
+    # Backfill aktual (6·04) — hanya bila store mendukung (penyedia DB);
+    # tanpa DATABASE_URL tidak ada yang bisa diisi (akurasi butuh Fase 6).
+    app.state.backfill_task = None
+    if callable(getattr(app.state.store, "fill_pending_actuals", None)):
+        sites = sorted(app.state.known_sites)
+        interval = backfill.interval_from_env()
+        app.state.backfill_task = asyncio.create_task(
+            backfill.backfill_loop(app.state.store, sites, interval=interval)
+        )
+        log.info("backfill aktual aktif: site=%s interval=%ss", sites, interval)
+
+    # Retensi (6·06) — DEFAULT MATI: FORECAST_RETENTION_DAYS tidak disetel
+    # atau 0 → tidak ada yang dihapus (bukti akurasi; volume kecil, lihat
+    # app/retention.py). Aktifkan eksplisit bila kebijakan data menuntut.
+    app.state.retention_task = None
+    retention_days = retention.retention_days_from_env()
+    if retention_days > 0 and callable(
+        getattr(app.state.store, "prune_forecasts", None)
+    ):
+        interval = float(os.environ.get("RETENTION_INTERVAL_SECONDS", "86400") or 86400)
+        app.state.retention_task = asyncio.create_task(
+            retention.retention_loop(
+                app.state.store,
+                days=retention_days,
+                prune_actuals=retention.prune_actuals_enabled(),
+                interval=max(interval, 60.0),
+            )
+        )
+        log.info(
+            "retensi AKTIF: hapus forecast >%s hari, interval %ss "
+            "(default: mati / simpan selamanya)",
+            retention_days, interval,
+        )
+    else:
+        log.info("retensi mati (FORECAST_RETENTION_DAYS=%s) — data disimpan "
+                 "selamanya (bukti akurasi, volume kecil)", retention_days)
     yield
 
     task = app.state.scheduler_task
@@ -203,6 +262,25 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+    backfill_task = app.state.backfill_task
+    if backfill_task is not None:
+        backfill_task.cancel()
+        try:
+            await backfill_task
+        except asyncio.CancelledError:
+            pass
+    retention_task = getattr(app.state, "retention_task", None)
+    if retention_task is not None:
+        retention_task.cancel()
+        try:
+            await retention_task
+        except asyncio.CancelledError:
+            pass
+    # Tutup pool DB (bila dipakai) — in-memory tidak butuh apa-apa.
+    close = getattr(app.state.store, "close", None)
+    if callable(close):
+        await asyncio.to_thread(close)
+        log.info("store: koneksi database ditutup")
 
 
 #: Folder template dashboard — level modul supaya bisa dipatch saat test.

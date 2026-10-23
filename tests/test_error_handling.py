@@ -220,7 +220,9 @@ def test_latest_still_readable_when_model_not_ready(client):
     pt = ForecastPoint(forecast_time=base + pd.Timedelta(days=1),
                        forecast_value=212.5, model_version=model_version())
     client.app.state.store.save(items_from_response(
-        forecast_id="seed-1", site_id=SITE, target="irradiance",
+        # §3.2: forecast_id = UUID (string sembarangan ditolak penyedia DB)
+        forecast_id="00000000-0000-4000-8000-000000000001",
+        site_id=SITE, target="irradiance",
         resolution="daily", unit="W/m2", ts=base, generated_at=base,
         model_version=model_version(), points=[pt]))
 
