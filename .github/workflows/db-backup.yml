@@ -1,0 +1,57 @@
+# Backup database terjadwal (6·06) — GitHub Actions.
+#
+# Mengapa di sini, bukan di dalam aplikasi / Render:
+#   - Render free tier tidak punya cron, dan disk-nya sementara (lenyap
+#     tiap deploy) — backup yang ditulis di sana adalah backup palsu.
+#   - GitHub Actions menjadwalkan harian, dan dump diunggah sebagai Artifacts
+#     (retensi 30 hari otomatis, di luar instance aplikasi).
+#
+# Setup (sekali):
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#     Name : DATABASE_URL
+#     Value: postgresql://user:pass@host:5432/forecast   (dari panel DB)
+#
+# Cadangan lokal: jalur --via-docker TIDAK dipakai di CI (tidak ada Docker
+# di runner); pg_dump dipasang via apt. Lihat scripts/backup_db.py.
+name: DB backup (6·06)
+
+on:
+  schedule:
+    # 03:00 UTC = 11:00 WITA — di luar jam operasional PLTS.
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}   # jalankan manual bila perlu
+
+permissions:
+  contents: read          # dump TIDAK pernah di-commit; hanya Artifacts.
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pg_dump versi MAJOR harus sama dengan server — runner memakai
+      # default apt (postgresql-client) yang modern untuk server 13+.
+      - name: Pasang klien PostgreSQL
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends postgresql-client
+
+      - name: Backup
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python3 scripts/backup_db.py --out backups
+
+      - name: Ringkas (tanpa kredensial)
+        run: ls -lh backups/
+
+      # Retensi artifact = 30 hari (retensi file --keep-days TIDAK dipakai
+      # di CI: workspace tiap run selalu baru, tidak ada file lama).
+      - name: Unggah dump
+        uses: actions/upload-artifact@v4
+        with:
+          name: forecast-db-${{ github.run_id }}
+          path: backups/forecast-*.dump.gz
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0   # sudah gzip dari script

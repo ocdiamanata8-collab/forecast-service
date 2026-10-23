@@ -30,6 +30,12 @@ data/raw/
 *.nc
 Data-*/
 
+# --- Backup database (6·06) — data yang bisa membongkar isi DB, jangan commit ---
+backups/
+*.dump
+*.dump.gz
+backup.log
+
 # --- Artefak model yang bisa diregenerasi (python scripts/export_model.py) ---
 # model.pkl = snapshot hasil fit ARIMA (±2,6 MB) — runtime TIDAK memuatnya.
 # Regenerasi: python scripts/export_model.py
