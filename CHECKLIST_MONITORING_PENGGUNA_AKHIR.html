@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checklist — Platform Monitoring untuk Pengguna Akhir · SEI</title>
+<style>
+:root{
+  --paper:#FAFAF7; --ink:#16202A; --muted:#5B7089; --rule:#E3E1D9;
+  --amber:#C98A1B; --amber-soft:#F6EBD6; --steel:#3E5468; --danger:#A2402F;
+  --mono:"IBM Plex Mono",ui-monospace,Consolas,monospace;
+  --sans:"IBM Plex Sans",system-ui,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.55 var(--sans);
+  -webkit-font-smoothing:antialiased}
+.wrap{max-width:74ch;margin:0 auto;padding:0 20px 96px}
+a{color:var(--steel)}
+
+/* ── header ── */
+header{border-bottom:1px solid var(--rule);padding:40px 0 0}
+.kicker{font:500 13px var(--mono);color:var(--muted);letter-spacing:.02em}
+h1{font:600 30px/1.15 var(--sans);margin:10px 0 6px;letter-spacing:-.01em}
+.sub{color:var(--muted);font-size:15px;margin:0 0 26px;max-width:62ch}
+.stats{display:flex;align-items:baseline;gap:14px;margin-bottom:10px}
+#doneNum{font:600 40px/1 var(--mono)}
+.stats span{color:var(--muted);font-size:14px}
+
+/* rail progres 7 segmen — elemen pembeda */
+.rail{display:flex;gap:3px;margin:14px 0 30px}
+.seg{flex:1;position:relative}
+.seg .bar{height:8px;background:var(--rule);border-radius:1px;overflow:hidden}
+.seg .fill{height:100%;width:0%;background:var(--amber);transition:width .35s ease}
+.seg .lbl{display:block;margin-top:6px;font:500 11px var(--mono);color:var(--muted);text-align:center}
+.seg.full .lbl{color:var(--ink)}
+
+/* ── fase ── */
+section{margin:52px 0 0;border-top:1px solid var(--rule);padding-top:26px}
+h2{font:600 21px/1.25 var(--sans);margin:0 0 4px;display:flex;gap:10px;align-items:baseline}
+h2 .letter{font:600 15px var(--mono);color:var(--amber);flex:none}
+.meta{font:400 13px var(--mono);color:var(--muted);margin:0 0 16px}
+.note{background:#F2F1EA;border-left:2px solid var(--rule);padding:10px 14px;margin:14px 0;
+  font-size:14.5px;color:var(--steel)}
+.note code{font:500 12.5px var(--mono);background:#fff;padding:1px 5px;border:1px solid var(--rule);border-radius:3px}
+
+/* ── item ── */
+ul.items{list-style:none;margin:0;padding:0}
+ul.items li{border-bottom:1px dotted var(--rule);padding:12px 0}
+.row{display:flex;gap:12px;align-items:flex-start;cursor:pointer}
+.row input{position:absolute;opacity:0;width:0;height:0}
+.box{flex:none;width:19px;height:19px;margin-top:2px;border:1.5px solid var(--muted);
+  border-radius:3px;background:#fff;display:grid;place-items:center;transition:.15s}
+.box svg{width:11px;height:11px;stroke:#fff;stroke-width:2.6;fill:none;opacity:0;transition:.12s}
+.row input:checked + .box{background:var(--amber);border-color:var(--amber)}
+.row input:checked + .box svg{opacity:1}
+.row input:focus-visible + .box{outline:2px solid var(--steel);outline-offset:2px}
+.code{font:500 12.5px var(--mono);color:var(--muted);flex:none;width:44px;margin-top:3px}
+.chip{font:600 10.5px var(--mono);flex:none;margin-top:4px;padding:1px 6px;border-radius:3px;
+  width:26px;text-align:center}
+.p0{background:var(--amber-soft);color:var(--amber);border:1px solid var(--amber)}
+.p1{background:transparent;color:var(--steel);border:1px solid var(--muted)}
+.p2{background:transparent;color:var(--muted);border:1px solid var(--rule)}
+.txt{flex:1;font-size:15.5px}
+.txt b{font-weight:600}
+li:has(input:checked) .txt{color:var(--muted);text-decoration:line-through;text-decoration-thickness:1px}
+li:has(input:checked) .txt b{text-decoration:inherit}
+
+/* ── footer ── */
+footer{margin-top:64px;border-top:1px solid var(--rule);padding-top:26px}
+footer h3{font:600 16px var(--sans);margin:22px 0 8px}
+pre{font:400 12.5px/1.6 var(--mono);background:#F2F1EA;padding:14px 16px;overflow-x:auto;
+  border:1px solid var(--rule);border-radius:4px}
+ol.rules{padding-left:20px;font-size:14.5px;color:var(--steel)}
+.reset{margin-top:40px;font-size:13px;color:var(--muted)}
+.reset button{font:500 12px var(--mono);color:var(--danger);background:none;
+  border:1px solid var(--rule);border-radius:4px;padding:4px 10px;cursor:pointer}
+.reset button:hover{border-color:var(--danger)}
+@media (max-width:560px){.code{width:38px}h1{font-size:25px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="kicker">SEI · Energy Intelligence Platform · rev 1.0 · 16 Okt 2026</div>
+  <h1>Menampilkan platform monitoring untuk pengguna akhir</h1>
+  <p class="sub">Melanjutkan Checklist Master — Forecasting Service. Master menghasilkan API;
+  checklist ini membangun tampilan pengguna akhir di platform monitoring, dari akses sampai go-live.
+  Engineer console tidak dipakai pengguna akhir — platform adalah konsumen API.</p>
+  <div class="stats"><strong id="doneNum">0</strong><span>dari <span id="totalNum">45</span> langkah selesai</span></div>
+  <div class="rail" id="rail"></div>
+</header>
+
+<main>
+<section id="A" data-letter="A">
+  <h2><span class="letter">A</span>Akses &amp; konfigurasi</h2>
+  <p class="meta">server · Rp0 · ± ½ hari</p>
+  <ul class="items">
+    <li><label class="row"><input type="checkbox" data-id="A01"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">A·01</span><span class="chip p0">P0</span><span class="txt"><b>Simpan API key platform di secret manager.</b> Satu key per konsumen; klien hanya mengirim nilai key (labelnya ada di server sebagai <code>API_KEYS=monitoring:&lt;key&gt;</code>). Jangan pernah di source code, URL, HTML, log, atau chat.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="A02"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">A·02</span><span class="chip p0">P0</span><span class="txt"><b>Pilih jalur pemanggilan.</b> Server repo tidak mengirim CORS (terverifikasi) — fetch browser lintas-origin diblokir browser. Rekomendasi server-side: backend platform fetch lalu render. Alternatif: izinkan hanya domain platform (bukan <code>*</code>, karena ada API key).</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="A03"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">A·03</span><span class="chip p0">P0</span><span class="txt"><b>Simpan base URL resmi</b> <code>https://ocdi.blitz.cloud</code> sebagai konfigurasi terpusat, bukan hardcode di banyak file.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="A04"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">A·04</span><span class="chip p1">P1</span><span class="txt"><b>Ambil adapter terjemahan.</b> <code>GET /static/monitoring-adapter.js</code> dari base URL, atau salin dari repo. Inilah satu-satunya berkas yang perlu disentuh bila kontrak berubah.</span></label></li>
+  </ul>
+</section>
+
+<section id="B" data-letter="B">
+  <h2><span class="letter">B</span>Ingesta &amp; normalisasi</h2>
+  <p class="meta">backend · Rp0 · ± 1 hari</p>
+  <ul class="items">
+    <li><label class="row"><input type="checkbox" data-id="B01"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">B·01</span><span class="chip p0">P0</span><span class="txt"><b>Fetch tiga endpoint monitoring</b> dengan header <code>X-API-Key</code>: <code>forecast/latest</code>, <code>forecast/history?limit=50</code>, <code>model/performance</code>. <code>health</code> boleh tanpa key (probe uptime).</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="B02"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">B·02</span><span class="chip p0">P0</span><span class="txt"><b>Terjemahkan lewat adapter</b> — <code>toForecast</code>, <code>toHistory</code>, <code>toPerformance</code>, <code>toActualSeries</code>, <code>toError</code>. Jangan membaca field kontrak (<code>forecast_value</code>, <code>generated_at</code>, <code>horizons[]</code>) langsung di UI: itulah janji “satu berkas”.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="B03"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">B·03</span><span class="chip p0">P0</span><span class="txt"><b>Simpan / cache hasil.</b> Minimal cache per site + <code>generated_at</code> (refresh 5–15 menit). Untuk UI responsif: cache lalu revalidate di background.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="B04"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">B·04</span><span class="chip p1">P1</span><span class="txt"><b>Gunakan <code>inHorizon</code> &amp; <code>validUntil</code> dari adapter</b> — jangan dihitung ulang; aturan jendela horizon sudah terpusat di adapter.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="B05"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">B·05</span><span class="chip p1">P1</span><span class="txt"><b>Pertahankan <code>model_version</code> &amp; <code>generated_at</code></b> hingga ke layer tampilan — syarat aturan 6 master: regresi akurasi harus bisa ditelusuri.</span></label></li>
+  </ul>
+</section>
+
+<section id="C" data-letter="C">
+  <h2><span class="letter">C</span>Tampilan inti pengguna akhir</h2>
+  <p class="meta">frontend · Rp0 · ± 2–3 hari</p>
+  <ul class="items">
+    <li><label class="row"><input type="checkbox" data-id="C01"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">C·01</span><span class="chip p0">P0</span><span class="txt"><b>Grafik produksi: garis forecast sebagai pembanding.</b> Garis aktual + garis forecast + (opsional) band error absolut; legenda jelas membedakan keduanya.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="C02"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">C·02</span><span class="chip p0">P0</span><span class="txt"><b>Label meta garis forecast:</b> <code>model_version</code> + <code>generated_at</code> + horizon + <code>validUntil</code>, contoh <em>Forecast · model v1.0 · dibuat 15 Okt 15:00 +08:00 · horizon 7 hari · valid s.d. 22 Okt</em>.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="C03"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">C·03</span><span class="chip p0">P0</span><span class="txt"><b>Sembunyikan garis forecast di luar jendela horizon</b> — filter <code>inHorizon</code> per titik; garis pecah di batas, jangan dijembatani. Sumber adapter, jangan implementasi ulang.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="C04"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">C·04</span><span class="chip p0">P0</span><span class="txt"><b>Titik tanpa aktual = “menunggu pengamatan”</b> — bukan nol, bukan garis kosong. Jangan interpolasi atau cocokkan tanggal terdekat (tidak boleh mengarang perbandingan).</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="C05"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">C·05</span><span class="chip p0">P0</span><span class="txt"><b>State service tidak tersedia — eksplisit</b>, bukan angka kosong. Lihat Fase D.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="C06"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">C·06</span><span class="chip p1">P1</span><span class="txt"><b>Kartu ringkasan pengguna:</b> nilai forecast terbaru, badge GO/NO-GO, MAE/MAPE, waktu pembuatan — semua lewat adapter.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="C07"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">C·07</span><span class="chip p1">P1</span><span class="txt"><b>Riwayat forecast</b> (halaman terpisah) dari <code>toHistory</code> — tiap entri menampilkan <code>generated_at</code> + horizon, memakai filter <code>from</code>/<code>to</code> (sudah terpasang di kontrak §5.3).</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="C08"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">C·08</span><span class="chip p1">P1</span><span class="txt"><b>Responsif &amp; aksesibel:</b> mobile-friendly; angka ditulis dengan <code>textContent</code>, bukan <code>innerHTML</code> — nilai API tidak tepercaya.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="C09"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">C·09</span><span class="chip p2">P2</span><span class="txt"><b>Perbandingan akurasi</b> ringkas dari <code>toPerformance</code>; pengguna akhir cukup badge “model v1.0 · GO”.</span></label></li>
+  </ul>
+</section>
+
+<section id="D" data-letter="D">
+  <h2><span class="letter">D</span>Keadaan gagal &amp; kadaluarsa</h2>
+  <p class="meta">menjawab 5·07 master · frontend + kebijakan · ± 1 hari</p>
+  <div class="note">Setiap state punya <b>pesan yang ditampilkan</b> — bukan angka kosong, bukan nilai basi.</div>
+  <ul class="items">
+    <li><label class="row"><input type="checkbox" data-id="D01"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">D·01</span><span class="chip p0">P0</span><span class="txt"><b>Aturan kadaluarsa — SUDAH DIPUTUSKAN</b> (lihat <code>KEPUTUSAN_5_07_KADALUARSA.md</code>): forecast berlaku s.d. <code>now ≤ validUntil</code> (= <code>ts + horizon hari</code>); lewat itu garis dihapus total + badge KEDALUARSA. Garis juga disembunyikan saat outage ≥ 2 menit, cache &gt; 1 jam, atau <code>generated_at</code> tertinggal &gt; 6 jam. Pesan per kondisi sudah didefinisikan — tinggal diimplementasi &amp; diuji (F·02).</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="D02"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">D·02</span><span class="chip p0">P0</span><span class="txt"><b>State “service tidak tersedia”:</b> pill merah + pesan jelas, semua angka &amp; garis lama dibersihkan — jangan pertahankan nilai hijau basi (telah dibuktikan &amp; diperbaiki di engineer console).</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="D03"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">D·03</span><span class="chip p0">P0</span><span class="txt"><b>State <code>404 E_NO_FORECAST</code>:</b> “forecast belum tersedia — scheduler belum jalan”. Berbeda dari outage: ini kondisi kontrak yang sah.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="D04"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">D·04</span><span class="chip p0">P0</span><span class="txt"><b>State 403/401:</b> “akses ditolak — hubungi admin”. Jangan tampilkan detail server.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="D05"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">D·05</span><span class="chip p1">P1</span><span class="txt"><b>State 429:</b> “permintaan terlalu sering — coba lagi nanti”; patuhi <code>Retry-After</code>.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="D06"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">D·06</span><span class="chip p1">P1</span><span class="txt"><b>State “menunggu pengamatan”</b> untuk titik forecast tanpa pasangan aktual (C·04).</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="D07"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">D·07</span><span class="chip p1">P1</span><span class="txt"><b>State cold-start</b> (Blitz free tier): 503 “The app is awake now” → tampilkan “layanan menyala ulang” + auto-retry.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="D08"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">D·08</span><span class="chip p1">P1</span><span class="txt"><b>Auto-recovery:</b> retry periodik (mis. 30 detik) setelah gagal; nilai baru hanya muncul setelah respons sukses.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="D09"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">D·09</span><span class="chip p2">P2</span><span class="txt"><b>Timestamp “terakhir diperbarui”</b> di UI — pengguna tahu umur data, walau dari cache.</span></label></li>
+  </ul>
+</section>
+
+<section id="E" data-letter="E">
+  <h2><span class="letter">E</span>Kebijakan data &amp; kuota</h2>
+  <p class="meta">keputusan · Rp0 · ± ½ hari</p>
+  <ul class="items">
+    <li><label class="row"><input type="checkbox" data-id="E01"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">E·01</span><span class="chip p0">P0</span><span class="txt"><b>TTL cache platform</b> (5–15 menit) lebih pendek dari cadangan segar scheduler (per jam) — paint pertama tidak pernah menunggu hit langsung ke API.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="E02"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">E·02</span><span class="chip p0">P0</span><span class="txt"><b>Hormati rate limit 60 req/menit per key.</b> Satu platform = satu key = satu kuota; jangan polling per-pengguna. Batch/aggregate di backend.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="E03"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">E·03</span><span class="chip p1">P1</span><span class="txt"><b>Cold start free tier</b> — pilih: keep-alive ping, bayar tier always-on, atau terima 30–60 detik dengan pesan D·07. Untuk pengguna akhir 24/7, always-on direkomendasikan.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="E04"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">E·04</span><span class="chip p1">P1</span><span class="txt"><b>Data aktual berhenti 31 Des 2025</b> — komunikasikan di UI (“pengamatan hingga 31 Des 2025”); forecast setelah tanggal itu tampil sebagai proyeksi tanpa pembanding (C·04).</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="E05"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">E·05</span><span class="chip p2">P2</span><span class="txt"><b>Retensi history platform</b> — berapa banyak <code>toHistory</code> disimpan (bergantung Fase 6 master: database).</span></label></li>
+  </ul>
+</section>
+
+<section id="F" data-letter="F">
+  <h2><span class="letter">F</span>Pengujian</h2>
+  <p class="meta">QA · Rp0 · ± 1 hari</p>
+  <ul class="items">
+    <li><label class="row"><input type="checkbox" data-id="F01"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">F·01</span><span class="chip p0">P0</span><span class="txt"><b>Uji siklus E2E data sungguhan:</b> data aktual masuk → forecast dibuat → platform menampilkannya → data berikutnya masuk dan dibandingkan → garis aktual + forecast + band tampil.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="F02"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">F·02</span><span class="chip p0">P0</span><span class="txt"><b>Uji setiap state kegagalan</b> (Fase D): matikan service → semua state tampil &amp; angka basi terhapus; sintetis 404/403/429/503 → pesan sesuai; pulihkan service → UI auto-recovery.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="F03"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">F·03</span><span class="chip p0">P0</span><span class="txt"><b>Uji jendela horizon:</b> titik di luar <code>ts + horizon</code> tidak muncul di garis, band, tabel, maupun tooltip.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="F04"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">F·04</span><span class="chip p1">P1</span><span class="txt"><b>Uji multi-site &amp; multi-key:</b> pemisahan data &amp; kuota antar konsumen benar.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="F05"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">F·05</span><span class="chip p1">P1</span><span class="txt"><b>Uji lintas zona:</b> semua timestamp tampil <code>+08:00</code> (WITA); jangan dikonversi ke zona browser.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="F06"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">F·06</span><span class="chip p1">P1</span><span class="txt"><b>Uji responsif</b> (375px, 768px, desktop) + dark mode bila platform memakainya.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="F07"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">F·07</span><span class="chip p2">P2</span><span class="txt"><b>Uji beban ringan:</b> 100 user serentak — cache menahan, API tidak kena rate limit.</span></label></li>
+  </ul>
+</section>
+
+<section id="G" data-letter="G">
+  <h2><span class="letter">G</span>Roll-out &amp; operasional</h2>
+  <p class="meta">live · biaya hosting · ± 1 hari</p>
+  <ul class="items">
+    <li><label class="row"><input type="checkbox" data-id="G01"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">G·01</span><span class="chip p0">P0</span><span class="txt"><b>UAT internal</b> dengan tim operasional SEI: alur harian mereka terlayani, angka masuk akal dibanding persepsi lapangan.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="G02"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">G·02</span><span class="chip p0">P0</span><span class="txt"><b>Go-live bertahap:</b> internal → sebagian pengguna → umum. Pantau error rate + latency.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="G03"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">G·03</span><span class="chip p1">P1</span><span class="txt"><b>Alert ke tim platform:</b> service down, status != GO, forecast kedaluwarsa berjam-jam, rate limit mendekati kuota.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="G04"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">G·04</span><span class="chip p1">P1</span><span class="txt"><b>Dokumen pemakaian untuk tim platform — SUDAH DIBUAT</b> (<code>README_INTEGRASI_PLATFORM.md</code>, jawab 5·08 master): URL, header, contoh request/response asli dari production, 22 kode error, rate limit 60/mnt, perilaku saat API down, kontak. Tinggal dikirim ke tim platform.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="G05"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">G·05</span><span class="chip p1">P1</span><span class="txt"><b>Runbook insiden:</b> service down / cold start berturut-turut / data aktual berhenti diperbarui / model version naik tapi performa turun.</span></label></li>
+    <li><label class="row"><input type="checkbox" data-id="G06"><span class="box"><svg viewBox="0 0 12 12"><path d="M1.5 6.5 4.5 9.5 10.5 2.5"/></svg></span><span class="code">G·06</span><span class="chip p2">P2</span><span class="txt"><b>Perbarui checklist master:</b> centang 5·05–5·08; tambah item 5·09 bila platform belum tercatat.</span></label></li>
+  </ul>
+</section>
+</main>
+
+<footer>
+  <h3>Urutan kerja</h3>
+  <pre>A (akses) → B (ingesta) → C (tampilan inti) → D (state gagal)
+                    ↘ E (kebijakan) ↗
+C+D+E → F (siklus E2E + kegagalan) → G (go-live)</pre>
+  <h3>Aturan (adaptasi dari 7 aturan master)</h3>
+  <ol class="rules">
+    <li>Monitoring hanya konsumen API — kode algoritma tidak masuk repo platform.</li>
+    <li>Nama field dikunci lewat test + adapter — ubah kontrak → edit adapter, bukan seluruh UI.</li>
+    <li>Timestamp selalu <code>+08:00</code> (WITA), jangan dikonversi ke zona browser.</li>
+    <li>Riwayat forecast tidak ditimpa — platform menyimpan per <code>generated_at</code>.</li>
+    <li>Forecast dijadwalkan, tidak dihitung ulang saat paint — baca hasil scheduler + cache.</li>
+    <li><code>model_version</code> + <code>generated_at</code> selalu tampil agar regresi akurasi telusur.</li>
+    <li>Kegagalan harus terlihat, bukan angka basi — setiap state gagal punya pesan.</li>
+  </ol>
+  <h3>Kriteria keluaran</h3>
+  <p style="font-size:14.5px;color:var(--steel);max-width:62ch">Platform menampilkan forecast pengguna akhir dari API sungguhan (lengkap label model version + waktu pembuatan), menyembunyikan garis di luar jendela horizon, membedakan “menunggu pengamatan” dari “data kosong”, menampilkan kegagalan dengan pesan jelas tanpa angka basi, lulus siklus E2E data nyata + simulasi kegagalan, dan siap go-live bertahap.</p>
+  <div class="reset"><button id="resetBtn" type="button">reset centang</button> · tersimpan otomatis di browser</div>
+</footer>
+</div>
+<script>
+const KEY="cl-mon-v1";
+const boxes=[...document.querySelectorAll('input[type=checkbox]')];
+const saved=JSON.parse(localStorage.getItem(KEY)||"{}");
+boxes.forEach(b=>b.checked=!!saved[b.dataset.id]);
+const rail=document.getElementById('rail');
+const secs=[...document.querySelectorAll('section')];
+secs.forEach(s=>{
+  const seg=document.createElement('div');seg.className='seg';
+  seg.innerHTML='<div class="bar"><div class="fill"></div></div><span class="lbl">'+s.dataset.letter+'</span>';
+  rail.appendChild(seg);
+});
+function update(){
+  const st={};let done=0;
+  boxes.forEach(b=>{st[b.dataset.id]=b.checked;if(b.checked)done++;});
+  localStorage.setItem(KEY,JSON.stringify(st));
+  document.getElementById('doneNum').textContent=done;
+  document.getElementById('totalNum').textContent=boxes.length;
+  secs.forEach((s,i)=>{
+    const n=s.querySelectorAll('input').length,f=s.querySelectorAll('input:checked').length;
+    const pct=n?f/n*100:0;
+    rail.children[i].querySelector('.fill').style.width=pct+'%';
+    rail.children[i].classList.toggle('full',pct===100);
+  });
+}
+boxes.forEach(b=>b.addEventListener('change',update));
+update();
+</script>
+</body>
+</html>
