@@ -33,6 +33,15 @@ services:
         # WAJIB diisi dari dashboard Render atau via env var — tanpa ini
         # endpoint ber-key membalas 401.
         sync: false
+      - key: DATABASE_URL
+        # 6·05 — string koneksi database: isi dari dashboard Render
+        # (File Sync / Environment Variables), BUKAN dari repository.
+        # Mengosongkannya = mode PoC in-memory (tanpa persistensi).
+        sync: false
+      - key: DATABASE_READONLY_URL
+        # 6·05 (opsional) — DSN user hak-baca untuk jalur latest/history.
+        # Kosongkan bila belum ada user read-only; kosong = pakai DATABASE_URL.
+        sync: false
       - key: SITE_IDS
         value: PLTS_KUPANG
       - key: PYTHON_VERSION

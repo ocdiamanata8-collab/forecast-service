@@ -63,6 +63,50 @@ tanpa menguji ulang (termasuk `tests/test_engine_golden.py` dan
    |---|---|
    | `MODEL_VERSION` | Versi hidup di `model/VERSION` — SATU-SATUNYA sumber (diuji `test_version.py`). Menambah env versi kedua hanya menciptakan sumber kebenaran ganda |
    | `TZ` | Zona dikunci `Asia/Makassar` (WITA, UTC+8) di kode. `Asia/Jakarta` (UTC+7) akan menggeser seluruh timestamp 1 jam dan membuat filter 07:00–17:00 salah — persis kekeliruan zona yang sudah diperangi |
+
+4b. **Database (Fase 6 · 6·05) — `DATABASE_URL`**. Isi dari dashboard Render
+   (Environment Variables), **bukan** dari repository — string koneksi adalah
+   rahasia seperti API key.
+
+   ```
+   DATABASE_URL=postgresql://user:pass@host:5432/forecast
+   ```
+
+   - **Sebelum start pertama** dengan DSN aktif, jalankan migration sekali:
+     `001_forecast_and_actual.sql` lalu `002_forecast_run.sql`
+     (folder `db/migrations/`). Tanpa tabel, startup sengaja **gagal cepat**
+     (`DatabaseUnavailable`) — tanpa fallback diam-diam ke in-memory.
+   - **`DATABASE_READONLY_URL` (opsional, 6·05)** — DSN user dengan hak baca
+     saja; jalur `latest`/`history` (dashboard) memakainya, terpisah dari
+     kredensial tulis. Kosongkan bila platform belum menyediakan user
+     read-only: semua operasi memakai `DATABASE_URL` (perilaku lama).
+     Pemisahan hak dilakukan di sisi database (grant SELECT vs tulis).
+   - **Mengosongkan `DATABASE_URL`** = kembali ke PoC in-memory (hilang saat
+     restart; backfill aktual & run log nonaktif).
+   - **Backup (6·06) — `scripts/backup_db.py`**. Berbeda dengan bagian lain,
+     ini **bukan env var**: script opsional yang memakai kredensial
+     `DATABASE_URL` yang sudah ada, jadi tidak ada rahasia baru untuk
+     dikelola. Prinsipnya sama dengan retensi baris: fitur mati sampai
+     pemanggilnya ada.
+     - `python scripts/backup_db.py --out backups` → satu backup
+       `forecast-<stempel>.dump.gz` (format custom pg_dump, dikompresi gzip).
+     - Host tanpa klien PostgreSQL (hanya Docker Desktop) → tambah
+       `--via-docker --container forecast-pg`: `pg_dump` dijalankan di dalam
+       container postgres.
+     - **Retensi default MATI** (`--keep-days 0`): file lama tidak dihapus
+       sampai Anda menyebutkannya. Menghapus backup tidak bisa dibatalkan,
+       jadi tidak boleh terjadi diam-diam.
+     - Cron harian (03:00, simpan 30 hari):
+
+       ```cron
+       0 3 * * * cd /srv/forecast-service && DATABASE_URL=... \
+         python scripts/backup_db.py --out backups --keep-days 30 >> backups/backup.log 2>&1
+       ```
+
+     - Password tidak pernah masuk argumen proses (terlihat di `ps`);
+       script menaruhnya lewat env `PGPASSWORD` hanya untuk proses `pg_dump`.
+     - Folder `backups/` sudah di-gitignore — backup diperlakukan seperti
+       kredensial, bukan seperti artefak yang boleh di-commit.
 5. Deploy. Health check otomatis memakai `/api/v1/health`.
 6. Verifikasi: `https://<nama-service>.onrender.com/api/v1/health`
    harus membalas `{"status":"ok", ...}`.
