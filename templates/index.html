@@ -473,10 +473,26 @@ function addLog(line) {
 }
 
 async function api(path, { auth = false, method = "GET", body = null } = {}) {
+  // BATAS TRANSPORT NON-MELEMPAR: setiap pemanggil SELALU menerima
+  // {status, data, headers}. Saat fetch gagal (server mati / cold start /
+  // offline), status = 0 dengan envelope tiruan HANYA untuk kondisi transport
+  // — tanpa itu kebanyakan pemanggil tanpa try/catch membiarkan pill hijau
+  // dan KPI angka BASI tertinggal di layar (persis yang dilarang instruksi:
+  // "service tidak tersedia harus tampil jelas, bukan angka kosong/salah").
   const headers = {};
   if (auth && apiKey) headers["X-API-Key"] = apiKey;
   if (body) headers["Content-Type"] = "application/json";
-  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  let res;
+  try {
+    res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  } catch (_) {
+    return {
+      status: 0,
+      data: { error: { code: "E_SERVICE_UNAVAILABLE",
+        message: "service tidak terjangkau (offline / cold start / di-restart) — coba lagi beberapa saat" } },
+      headers: new Headers(),
+    };
+  }
   let data = null;
   try { data = await res.json(); } catch (_) { /* non-JSON */ }
   return { status: res.status, data, headers: res.headers };
@@ -489,13 +505,22 @@ function setPill(id, status, text) {
 
 function showErr(id, r) {
   const el = $(id);
-  if (!r || r.status < 400) { el.innerHTML = ""; return; }
+  // HANYA respons sukses (2xx/3xx) yang membersihkan kotak error. Status 0
+  // (transport gagal) HARUS tampil — dulu `status < 400` menyamakannya
+  // dengan sukses sehingga outage service tampak seperti "semua baik".
+  if (r && r.status >= 200 && r.status < 400 && !(r.data && r.data.error)) {
+    el.innerHTML = "";
+    return;
+  }
+  if (!r) { el.innerHTML = ""; return; }
   const e = (r.data && r.data.error) || {};
   el.innerHTML = "";
   const div = document.createElement("div");
   div.className = "err";
-  div.textContent = `${r.status} ${e.code || "?"} — ${e.message || "tanpa pesan"}` +
-    (e.details ? "\ndetails: " + JSON.stringify(e.details) : "");
+  div.textContent = r.status === 0
+    ? `NETWORK_ERROR — ${e.message || "service tidak terjangkau (offline / cold start / di-restart)"}`
+    : `${r.status} ${e.code || "?"} — ${e.message || "tanpa pesan"}` +
+      (e.details ? "\ndetails: " + JSON.stringify(e.details) : "");
   el.appendChild(div);
 }
 
@@ -736,7 +761,16 @@ async function loadEvaluation() {
   const r = await api(`/api/v1/model/performance?site_id=${encodeURIComponent(s)}`, { auth: true });
   showErr("evalErr", r);
   if (r.status !== 200 || !r.data) {
-    setPill("hEval", false, String(r.status));
+    setPill("hEval", false, r.status === 0 ? "tidak terjangkau" : String(r.status));
+    // Bersihkan tabel/chips/verdict lama — angka backtest basi jangan
+    // tetap terbaca seolah performa terkini.
+    const tb = $("evalTable").querySelector("tbody");
+    if (tb) tb.innerHTML = "";
+    $("evalTable").hidden = true;
+    $("evalChips").hidden = true;
+    $("evalVerdict").innerHTML = r.status === 0
+      ? '<span class="verdict-bad">Service tidak terjangkau — metrik performa tidak dapat dimuat.</span>'
+      : `<span class="muted">Performance tidak terbaca (HTTP ${r.status}).</span>`;
     return;
   }
   const d = toPerformance(r.data); // rendering: model internal; audit tetap respons asli
@@ -820,9 +854,15 @@ async function loadLatest() {
       renderAudit();
     });
   } else {
-    setPill("hLatest", false, String(r.status));
+    setPill("hLatest", false, r.status === 0 ? "tidak terjangkau" : String(r.status));
     renderContext(null);
     renderForecastTable("fcTable", []);
+    // Grafik lama + label meta dari sesi sebelumnya harus DIBERSIHKAN:
+    // layar tidak boleh mempertahankan garis "forecast hidup" seolah data
+    // masih segar saat service mati / forecast tidak tersedia.
+    clearComparisonState(r.status === 0
+      ? "Service tidak terjangkau — grafik forecast tidak dapat dimuat ulang."
+      : "Belum ada forecast tersimpan untuk site ini.");
     addLog(`GET /latest -> ${r.status}`);
     // E_NO_FORECAST / E_SITE_UNKNOWN adalah respons KONTRAK YANG BENAR
     // untuk keadaan tertentu — bukan pelanggaran kontrak. Menandai FAIL di
@@ -857,8 +897,17 @@ async function loadModelInfo() {
   const r = await api("/api/v1/model/info", { auth: true });
   showErr("infoErr", r);
   const box = $("infoChips");
-  box.innerHTML = "";
-  if (r.status !== 200 || !r.data) return;
+  box.innerHTML = ""; // chips lama selalu dibersihkan — jangan menumpuk/stale
+  if (r.status !== 200 || !r.data) {
+    if (r.status === 0) {
+      const div = document.createElement("div");
+      div.className = "chip";
+      div.innerHTML = "<b>model info</b>";
+      div.appendChild(document.createTextNode("service tidak terjangkau"));
+      box.appendChild(div);
+    }
+    return;
+  }
   const info = toModelInfo(r.data);
   for (const [label, value] of [
     ["model_version", info.modelVersion], ["target", info.target],
@@ -894,7 +943,15 @@ async function refreshHealth() {
       renderAudit();
     }
   } else {
-    setPill("hHealth", false, String(r.status));
+    // Service tidak terjangkau atau tidak sehat: JANGAN meninggalkan versi/
+    // uptime basi di layar (bisa terbaca "masih hidup" padahal sudah mati).
+    setPill("hHealth", false, r.status === 0 ? "tidak terjangkau" : `HTTP ${r.status}`);
+    $("hVer").textContent = "–";
+    $("hUp").textContent = "–";
+    if (!auditRows.some((x) => x.name.startsWith("health:"))) {
+      audit("health: respons terbaca", false, `HTTP ${r.status} — service tidak terjangkau`);
+      renderAudit();
+    }
   }
   showErr("connErr", r);
   return r.data;
@@ -931,6 +988,18 @@ function showChartEmpty(message) {
   // chartMeta TIDAK dihapus di sini: label model+generated_at tetap relevan
   // meski garis tidak bisa digambar (mis. tanpa overlap aktual) — penonton
   // perlu tahu model mana yang dibicarakan. Diisi/dihapus oleh drawComparisonChart.
+}
+
+function clearComparisonState(message) {
+  // Dipakai saat SERVICE TIDAK TERJANGKAU: grafik lama + label meta basi
+  // harus hilang — layar tidak boleh mempertahankan "grafik hidup" dari
+  // sesi sebelumnya seolah data masih segar. (Beda dari showChartEmpty
+  // pada kasus overlap-0, di mana meta memang sah dipertahankan.)
+  showChartEmpty(message);
+  $("chartMeta").textContent = "";
+  $("chartMeta").hidden = true;
+  chartForecastPoints = [];
+  chartRows = [];
 }
 
 function clearSvg(group) {
@@ -1349,17 +1418,21 @@ async function refreshSummary() {
       addLog(`ringkasan: performance -> 200 (${d.status})`);
     } else {
       const code = rp.data && rp.data.error && rp.data.error.code;
-      setKpi("kpiMae", null, `HTTP ${rp.status}${code ? " " + code : ""}`, "bad");
-      setKpi("kpiMape", null, `HTTP ${rp.status}${code ? " " + code : ""}`, "bad");
-      setKpi("kpiLastRun", null, `HTTP ${rp.status}${code ? " " + code : ""}`, "bad");
-      $("kpiStatus").textContent = `Performance tidak terbaca: HTTP ${rp.status} ${code || ""}`;
-      setEndpointStatus("performance", rp.status >= 500 ? "bad" : "warn",
-                        `HTTP ${rp.status}${code ? " · " + code : ""}`);
+      const why = rp.status === 0 ? "service tidak terjangkau" : `HTTP ${rp.status}${code ? " " + code : ""}`;
+      setKpi("kpiMae", null, why, "bad");
+      setKpi("kpiMape", null, why, "bad");
+      setKpi("kpiLastRun", null, why, "bad");
+      $("kpiStatus").textContent = `Performance tidak terbaca: ${why}`;
+      setEndpointStatus("performance", "bad", rp.status === 0 ? "NETWORK_ERROR" : `HTTP ${rp.status}${code ? " · " + code : ""}`);
+      addLog(`ringkasan: performance -> ${rp.status}${code ? " " + code : ""}`);
     }
   } catch (e) {
     setKpi("kpiMae", null, "gagal diambil", "bad");
     setKpi("kpiMape", null, "gagal diambil", "bad");
     setKpi("kpiLastRun", null, "gagal diambil", "bad");
+    // kpiStatus juga harus di-reset — dibiarkan, "GO" basi tertinggal
+    // di layar padahal angka di atasnya sudah bertanda gagal.
+    $("kpiStatus").textContent = "Performance tidak terbaca — service tidak terjangkau.";
     setEndpointStatus("performance", "bad", "network error");
   }
 
@@ -1378,12 +1451,15 @@ async function refreshSummary() {
       addLog("ringkasan: model/info -> 200");
     } else {
       const code = ri.data && ri.data.error && ri.data.error.code;
-      setKpi("kpiModel", null, `HTTP ${ri.status}${code ? " " + code : ""}`, "bad");
-      setEndpointStatus("info", ri.status >= 500 ? "bad" : "warn",
-                        `HTTP ${ri.status}${code ? " · " + code : ""}`);
+      const why = ri.status === 0 ? "service tidak terjangkau" : `HTTP ${ri.status}${code ? " " + code : ""}`;
+      setKpi("kpiModel", null, why, "bad");
+      setKpi("kpiRows", null, why, "bad"); // dibiarkan, angka artefak basi tertinggal
+      setEndpointStatus("info", "bad", ri.status === 0 ? "NETWORK_ERROR" : `HTTP ${ri.status}${code ? " · " + code : ""}`);
+      addLog(`ringkasan: model/info -> ${ri.status}${code ? " " + code : ""}`);
     }
   } catch (e) {
     setKpi("kpiModel", null, "gagal diambil", "bad");
+    setKpi("kpiRows", null, "gagal diambil", "bad");
     setEndpointStatus("info", "bad", "network error");
   }
 
