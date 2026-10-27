@@ -32,6 +32,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api import forecast as forecast_api
 from app.api import health as health_api
+from app.api import jobs as jobs_api
 from app.api import model as model_api
 from app.artifacts import ArtifactError, load_artifacts
 from app import backfill
@@ -302,6 +303,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(forecast_api.router)
+    app.include_router(jobs_api.router)
     app.include_router(model_api.router)
     app.include_router(health_api.router)
 

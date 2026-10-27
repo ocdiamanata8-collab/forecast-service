@@ -323,16 +323,52 @@ Belum diimplementasikan (sengaja, menunggu keputusan §10 kontrak):
 Scheduler rolling forecast **sudah berjalan** (Fase 4): job latar belakang
 memanggil `service.run_forecast()` dengan data tail `data/actuals.csv`,
 menyimpan hasil ke store, dan mengisi `GET /forecast/latest` +
-`/forecast/history` — tick pertama saat startup, lalu regenerasi per jam.
-Aturan operasional:
+`/forecast/history` — tick pertama saat startup, lalu regenerasi **setiap 1 jam**.
 
-    SCHEDULER_ENABLED=false      # matikan job (default: true)
-    SCHEDULER_INTERVAL_SECONDS=3600   # interval regenerasi (default per jam)
+### Keputusan interval: satu jam (3600 detik)
+
+**Jangan memperpendek interval tanpa keputusan operasional dan pengukuran.**
+Satu jam menjadi titik awal produksi PLTS karena:
+
+- Kontrak §1.4 menyebut forecast diregenerasi minimal per jam; §5.2 memakai
+  SLA 90 menit untuk mendeteksi regenerasi yang terlambat. Interval 3600 detik
+  menjaga forecast tetap dalam SLA tanpa menjadwalkan kerja berlebihan.
+- Sumber aktual saat ini `data/actuals.csv` — dataset tidak bertambah setiap
+  menit. Forecast per menit akan menghitung ulang hasil dari data yang sama,
+  menambah baris riwayat dan beban CPU/database tanpa menambah kesegaran nyata.
+- Interval lebih pendek menaikkan jumlah batch (dan baris DB) secara
+  proporsional: tiap run menyimpan satu titik per horizon per site. Contoh:
+  24 run/hari pada interval 1 jam; 1440 run/hari pada interval 1 menit —
+  **60×** batch dan baris, tanpa jaminan data aktual lebih baru.
+- Interval lebih pendek juga menghabiskan kuota pemicu eksternal lebih cepat.
+  Job harus dipanggil terpusat, bukan sekali per pengguna dashboard.
+
+Interval internal bersifat **fixed-delay**, bukan cron yang selaras dengan
+menit `00`: proses menjalankan tick saat startup, lalu tidur 3600 detik di
+antara tick. Jika kebijakan operasional memerlukan jadwal tepat di awal jam,
+gunakan cron eksternal (zona waktu server harus ditetapkan eksplisit):
+
+```cron
+# Tiap menit ke-00 setiap jam, zona waktu server
+0 * * * * /srv/scripts/run_forecast.sh
+```
+
+Jangan jalankan cron eksternal bersamaan dengan scheduler internal — itu akan
+menggandakan forecast dan baris riwayat. Bila memilih cron, set
+`SCHEDULER_ENABLED=false` pada service; wrapper eksternal memanggil job
+`POST /internal/v1/jobs/forecast` per `site_id`/`horizon` dengan header
+`X-API-Key`. Simpan key di secret manager, bukan di dalam script atau crontab.
+
+Aturan operasional scheduler internal:
+
+    SCHEDULER_ENABLED=false      # matikan job internal (default: true)
+    SCHEDULER_INTERVAL_SECONDS=3600   # 1 jam; ubah hanya setelah evaluasi
 
 Store bawaan in-memory: forecast hilang saat proses restart, tapi scheduler
-mengisinya ulang otomatis dalam hitungan detik. Untuk persistensi lintas
-restart, tambahkan penyedia `ForecastStore` lain (mis. SQLite) — endpoint
-tidak berubah.
+mengisinya ulang otomatis pada tick startup. Dengan PostgreSQL (`DATABASE_URL`),
+forecast tetap tersimpan lintas restart. Pada mode multi-worker/replica,
+matikan scheduler internal di worker non-utama agar tiap proses tidak
+menghasilkan batch duplikat.
 
 ---
 
