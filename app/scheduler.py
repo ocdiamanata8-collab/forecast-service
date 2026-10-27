@@ -52,7 +52,13 @@ from app import service
 from app.actuals import ACTUALS_COLUMN, load_actual_series
 from app.preprocessing import DEFAULT_TIMEZONE
 from app.schemas import ForecastPoint
-from app.storage import ForecastStore, StoredForecast, items_from_response, new_forecast_id
+from app.storage import (
+    ForecastRunBusy,
+    ForecastStore,
+    StoredForecast,
+    items_from_response,
+    new_forecast_id,
+)
 
 log = logging.getLogger("app.scheduler")
 
@@ -194,8 +200,39 @@ def run_site_forecast(
     tanpa itu kegagalan run eksternal hanya hidup di log runner CI dan hilang
     saat restart. Pencatatan tidak boleh menjatuhkan run (defensif ganda:
     implementasi DB sudah menangkapnya).
+
+    **Anti-tumpang-tindih**: bila store mendukung ``site_run_lock`` (penyedia
+    DB), seluruh run site ini dilakukan di bawah kunci advisory per-site.
+    Dua run bersamaan (interval penjadwalan < durasi job, atau pemicu dari
+    sumber berbeda: GitHub Actions + cron server) akan menghasilkan dua batch
+    dengan ``generated_at`` berbeda — forecast berubah di tengah hari tanpa
+    alasan. Kunci TAK memblokir: bila pemicu lain sedang berjalan, run ini
+    DILEWATI (melempar :class:`~app.storage.ForecastRunBusy`) dan pemanggil
+    (endpoint job / tick) menanganinya sebagai "sudah ada yang menjalankan" —
+    bukan antre, karena antrean tetap menulis batch kedua.
     """
     started = now or datetime.now(tz=SITE_TZ)
+    lock = getattr(store, "site_run_lock", None)
+    if not callable(lock):
+        return _run_site_forecast_locked(
+            store, site_id, rows=rows, horizon=horizon, now=now, started=started
+        )
+    with lock(site_id):
+        return _run_site_forecast_locked(
+            store, site_id, rows=rows, horizon=horizon, now=now, started=started
+        )
+
+
+def _run_site_forecast_locked(
+    store: ForecastStore,
+    site_id: str,
+    *,
+    rows: int,
+    horizon: int,
+    now: datetime | None,
+    started: datetime,
+) -> StoredForecast:
+    """Bagian run yang butuh kunci (lihat :func:`run_site_forecast`)."""
     try:
         history = fetch_history(site_id, rows=rows, now=now)
         item = run_and_store_forecast(
@@ -238,6 +275,10 @@ def tick(
     Mengembalikan ``forecast_id`` yang berhasil disimpan (untuk log/uji).
     Jejak run ke ``forecast_run`` dilakukan di dalam
     :func:`run_site_forecast` — lihat catatan di sana.
+
+    Site yang sedang diproses pemicu lain (kunci advisory) **dilewati tanpa
+    error**: itu kondisi normal (bukan kegagalan) — menulisnya sebagai run
+    ``failed`` akan memicu alarm palsu pada monitor alert.
     """
     saved: list[str] = []
     for site_id in sites:
@@ -245,6 +286,13 @@ def tick(
             item = run_site_forecast(store, site_id, now=now)
         except asyncio.CancelledError:  # pragma: no cover - shutdown path
             raise
+        except ForecastRunBusy:
+            log.info(
+                "scheduler tick melewati site=%s — run lain sedang berjalan "
+                "(kunci advisory); tidak ada batch ganda",
+                site_id,
+            )
+            continue
         except Exception:
             log.exception("scheduler tick gagal untuk site=%s — lanjut ke site berikut", site_id)
             continue

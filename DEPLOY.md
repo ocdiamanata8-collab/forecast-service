@@ -140,6 +140,11 @@ tanpa menguji ulang (termasuk `tests/test_engine_golden.py` dan
      plus notifikasi pemulihan.
    - Uji cepat: jalankan workflow `Forecast failure monitor (7·04)` lewat
      **Run workflow** (`workflow_dispatch`) — tidak menunggu jadwal 15 menit.
+   - **Overlap run dilindungi lock advisory per site**: bila dua pemicu
+     menabrak (interval lebih pendek dari durasi job, atau Actions + cron
+     berjalan bersamaan), pemicu kedua menerima `409 E_RUN_BUSY` dan
+     dilewati — bukan menulis batch duplikat. Job CI yang merah karena 409
+     menandakan overlap, bukan kegagalan forecast.
    - Scheduled workflow repo public **dinonaktifkan otomatis** bila repo tak
      ada aktivitas 60 hari — pantau tab Actions dan aktifkan ulang.
    - Jadwal memakai UTC; menit `:05/:20/:35/:50` dipakai sengaja (jadwal di

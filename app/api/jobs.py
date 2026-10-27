@@ -54,6 +54,7 @@ from app.security import (
     require_api_key,
     require_model_ready,
 )
+from app.storage import ForecastRunBusy
 
 router = APIRouter(prefix="/internal/v1", tags=["jobs"])
 
@@ -115,6 +116,11 @@ def forecast_job(
     store = request.app.state.store
     try:
         item = run_site_forecast(store, payload.site_id, horizon=payload.horizon)
+    except ForecastRunBusy as exc:
+        # Pemicu lain (mis. Actions + cron yang overlap) sedang memegang
+        # kunci untuk site ini. Skip, JANGAN antre: antrean tetap menulis
+        # batch duplikat sesudah run pertama selesai.
+        raise FastApiError("E_RUN_BUSY", str(exc), status=409) from exc
     except service.ForecastError as exc:
         # Adapter error yang sama dengan api.forecast.run_forecast:
         # galat domain (mis. E_HISTORY_TOO_SHORT) → envelope §3.3.

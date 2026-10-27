@@ -368,6 +368,32 @@ Cron dan warm tick memakai horizon yang sama (`DEFAULT_HORIZON = 24`), satu
 sumber di `app/scheduler.py`. Jendela validitas monitoring mengikuti nilai
 tersebut (`validUntil = ts + horizon`, lihat `KEPUTUSAN_5_07_KADALUARSA.md`).
 
+### Anti tumpang-tindih: lock advisory per site
+
+Interval penjadwalan bisa lebih pendek dari durasi satu job (fit ARIMA +
+tulis), dan pemicu bisa datang dari **sumber berbeda** (GitHub Actions +
+cron server + panggilan manual ke job). Dua run yang masuk bersamaan
+menulis dua batch dengan `generated_at` berbeda — forecast berubah di
+tengah hari tanpa alasan, plus dua kali beban model.
+
+Pencegahannya: **advisory lock PostgreSQL per site**
+(`PostgresForecastStore.site_run_lock`, dipanggil dari
+`scheduler.run_site_forecast` — satu-satunya jalur tulis). Tabel, kolom,
+atau layanan tambahan tidak diperlukan; kunci otomatis mati bila proses
+mati (tak ada lock yang menggantung).
+
+- Pemicu pertama menjalankan run seperti biasa.
+- Pemicu kedua **DILEWATI, bukan diantre** — antrean tetap menulis batch
+  kedua, sama saja dengan duplikat. Via endpoint job: `409 E_RUN_BUSY`
+  (envelope §3.3, endpoint internal); via warm tick: dilewati dengan log;
+  via `scripts/run_forecast.sh`: curl `--fail-with-body` membuat job CI
+  merah (sinyal overlap, bukan kegagalan forecast).
+- Run yang dilewati **tidak dicatat sebagai `failed`** di `forecast_run`
+  — "sibuk" bukan kegagalan; mencatatnya akan memicu alarm alert 7·04
+  palsu.
+- Kunci dipegang koneksi pinjaman yang ditutup setelah selesai — koneksi
+  pool tidak pernah mewarisi kunci sesi orang lain.
+
 ### Kalau menjadwalkan sendiri (bukan GitHub Actions)
 
 ```cron

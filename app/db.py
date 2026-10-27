@@ -37,9 +37,12 @@ DSN disimpan di environment ``DATABASE_URL`` (§6·05) — tidak pernah di kode.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from typing import Iterator
 
 import psycopg
 from psycopg.rows import tuple_row
@@ -47,6 +50,7 @@ from psycopg_pool import ConnectionPool
 
 from app.schemas import ForecastPoint, SITE_TZ
 from app.storage import (
+    ForecastRunBusy,
     ForecastStore,
     StoredForecast,
     decode_cursor,
@@ -168,6 +172,20 @@ _LAST_RUN_SQL = """
       FROM forecast_run
      WHERE site_id = %(site_id)s
 """
+
+
+def _site_lock_key(site_id: str) -> int:
+    """Kunci advisory lintas-proses per site (bigint, deterministik).
+
+    ``blake2b`` — BUKAN ``hash()`` Python: ``hash()`` di-random per proses
+    (PYTHONHASHSEED), sehingga dua proses menghitung kunci berbeda dan lock
+    tidak pernah saling melindungi. Ukuran 8 byte + signed membuat hasil
+    muat persis di ``bigint`` (advisory lock satu-argumen).
+    """
+    digest = hashlib.blake2b(
+        f"forecast-run:{site_id}".encode("utf-8"), digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "big", signed=True)
 
 # ── state alert (migration 003) ──────────────────────────────────────────
 # Upsert state per (site, kondisi). `last_notified_at` hanya ditulis setelah
@@ -455,6 +473,68 @@ class PostgresForecastStore(ForecastStore):
             item.site_id, item.forecast_id, len(rows),
             item.generated_at.isoformat(),
         )
+
+    # ── anti-tumpang-tindih (advisory lock per site) ──────────────────────
+    @contextmanager
+    def site_run_lock(self, site_id: str) -> Iterator[None]:
+        """Kunci advisory per site — mencegah dua run bersamaan menulis duplikat.
+
+        Alasan lock ini ada: interval penjadwalan (1 jam) bisa lebih pendek dari
+        durasi satu job (fit ARIMA + tulis), dan pemicu bisa datang dari
+        SUMBER BERBEDA (GitHub Actions, cron server sendiri, panggilan
+        langsung). Kalau dua run masuk bersamaan, keduanya menulis batch
+        dengan ``generated_at`` berbeda — forecast berubah di tengah hari
+        tanpa alasan.
+
+        Mekanisme: ``pg_try_advisory_lock`` (satu-argumen, ``bigint``) —
+        lock level sesi, ditahan selama koneksi hidup. Tidak blocking: bila
+        sudah dipegang proses lain, lock langsung GAGAL dan pemanggil
+        LEWATI run-nya (tidak antre — antrian tetap menghasilkan batch
+        kedua, sama saja dengan menulis duplikat). Pelepusan dijamin
+        ``finally`` + koneksi sengaja dibuang dari pool (kunci sesi hilang
+        bersama sesi; koneksi yang dikembalikan ke pool masih memegang
+        kunci).
+
+        Lock Postgres-native: tak perlu tabel/lock eksternal, dan otomatis
+        mati bila proses mati (tak ada lock yang menggantung).
+        """
+        key = _site_lock_key(site_id)
+        conn = self._write_pool.getconn()
+        try:
+            acquired = conn.execute(
+                "SELECT pg_try_advisory_lock(%s)", (key,)
+            ).fetchone()[0]
+            if not acquired:
+                raise ForecastRunBusy(
+                    f"run untuk site {site_id} sudah berjalan di pemicu lain"
+                )
+            try:
+                yield
+            finally:
+                try:
+                    conn.execute("SELECT pg_advisory_unlock(%s)", (key,))
+                except Exception:
+                    # Unlock gagal = sesi rusak di menit-menit terakhir; kunci
+                    # TETAP terlepas karena conn.close() di bawah mengakhiri
+                    # sesi (advisory lock level-sesi). Jangan membuang run yang
+                    # sudah tersimpan hanya karena unlock gagal.
+                    log.exception(
+                        "advisory unlock gagal untuk site=%s — sesi ditutup",
+                        site_id,
+                    )
+                finally:
+                    # Kunci bersifat level-sesi: koneksi yang dikembalikan ke
+                    # pool AKAN tetap memegang kunci. Tutup koneksi ini agar
+                    # sesi berakhir dan kunci dilepas; pool membuang koneksi
+                    # tertutup (UNKNOWN) dan membuat gantinya.
+                    conn.close()
+                    self._write_pool.putconn(conn)
+        finally:
+            # Jalur gagal (lockBusy / exception sebelum lock): lepaskan
+            # koneksi agar tidak bocor dari pool.
+            if not conn.closed:
+                conn.close()
+                self._write_pool.putconn(conn)
 
     def latest(self, site_id: str) -> StoredForecast | None:
         """Batch terbaru untuk site — inilah yang dibaca ``GET /forecast/latest``.

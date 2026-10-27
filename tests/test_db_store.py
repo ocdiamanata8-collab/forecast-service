@@ -44,7 +44,7 @@ _DSN = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL", "")
 
 from app.db import DatabaseUnavailable, PostgresForecastStore  # noqa: E402
 from app.schemas import ForecastPoint  # noqa: E402
-from app.storage import StoredForecast  # noqa: E402
+from app.storage import ForecastRunBusy, StoredForecast  # noqa: E402
 
 WITA = timezone(timedelta(hours=8))
 SITE = "ZZ_TEST_DB"
@@ -276,6 +276,89 @@ def test_alert_state_upsert_is_durable_and_idempotent(store):
     assert store.alert_state_mark_recovered(
         SITE, "consecutive_failure", now=repeat_at + timedelta(minutes=2)
     ) is False
+
+
+def test_site_lock_key_deterministic_and_fits_bigint():
+    """Kunci lintas proses: deterministik (bukan hash() yang di-random) dan
+    muat di bigint (advisory lock satu-argumen)."""
+    from app.db import _site_lock_key
+
+    assert _site_lock_key(SITE) == _site_lock_key(SITE)
+    assert _site_lock_key(SITE) != _site_lock_key("ZZ_LAIN")
+    for candidate in (SITE, "PLTS_KUPANG", "x" * 300, "unicode-✓-site"):
+        assert -2**63 <= _site_lock_key(candidate) < 2**63
+
+
+def test_site_run_lock_blocks_second_trigger_and_releases(store):
+    """Pemicu kedua pada site sama DITOLAK (bukan antre); setelah lepas,
+    kunci bisa dipegang lagi — tidak ada kunci yang menggantung."""
+    other = PostgresForecastStore(_DSN)
+    try:
+        with store.site_run_lock(SITE):
+            with pytest.raises(ForecastRunBusy):
+                with other.site_run_lock(SITE):
+                    pass  # pragma: no cover — tidak boleh tercapai
+        # Kunci dilepas setelah konteks → pemicu kedua boleh masuk.
+        with other.site_run_lock(SITE):
+            pass
+    finally:
+        other.close()
+
+
+def test_site_run_lock_is_per_site_not_global(store):
+    """Site berbeda punya kunci berbeda — lock satu site tidak memblokir
+    site lain (penting bila SITE_IDS > 1)."""
+    other = PostgresForecastStore(_DSN)
+    try:
+        with store.site_run_lock(SITE):
+            with other.site_run_lock("ZZ_TEST_DB_LAIN"):
+                pass  # site lain bebas — tak terblokir
+    finally:
+        other.close()
+
+
+def test_site_run_lock_survives_pool_reuse(store):
+    """Kunci tidak bocor ke koneksi pool berikutnya: siklus berulang melebihi
+    ukuran pool (min 1 / max 4) — tiap siklus membuang sesi berkunci lalu
+    memakai sesi baru; kunci lama wajib sudah mati."""
+    for i in range(12):
+        with store.site_run_lock(SITE):
+            pass
+    with store.site_run_lock(SITE):  # masih bisa kunci — sesi lama tak menggantung
+        pass
+
+
+def test_run_site_forecast_busy_when_other_trigger_holds_lock(store, monkeypatch):
+    """End-to-end: run_site_forecast melempar ForecastRunBusy TANPA mencatat
+    run gagal — "sibuk" bukan kegagalan (mencatatnya memicu alarm alert 7·04
+    palsu)."""
+    import numpy as np
+    import pandas as pd
+
+    from app import scheduler
+    from app.preprocessing import DEFAULT_TIMEZONE
+
+    idx = pd.date_range("2024-01-01", periods=90, freq="D", tz=DEFAULT_TIMEZONE)
+    day = idx.dayofyear.to_numpy(dtype="float64")
+    values = np.clip(180 + 60 * np.sin(2 * np.pi * day / 365.25), 0, None)
+    hist = [(ts.to_pydatetime(), float(v)) for ts, v in zip(idx, values)]
+    monkeypatch.setattr(scheduler, "fetch_history", lambda _s, **_kw: hist)
+
+    other = PostgresForecastStore(_DSN)
+    try:
+        with other.site_run_lock(SITE):
+            with pytest.raises(ForecastRunBusy, match="berjalan"):
+                scheduler.run_site_forecast(store, SITE, horizon=7)
+            # Tidak ada run tercatat (bukan kegagalan) & tidak ada batch.
+            assert _runs(store, SITE) == []
+            assert store.latest(SITE) is None
+        # Setelah kunci lepas: run normal, tercatat sebagai ok.
+        item = scheduler.run_site_forecast(store, SITE, horizon=7)
+        rows = _runs(store, SITE)
+        assert len(rows) == 1 and rows[0][1] == "ok"
+        assert str(rows[0][3]) == item.forecast_id
+    finally:
+        other.close()
 
 
 def test_run_log_records_success_and_failure(store, monkeypatch):

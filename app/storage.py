@@ -91,6 +91,22 @@ def decode_cursor(cursor: str) -> tuple[datetime, str]:
     return generated_at, forecast_id
 
 
+class ForecastRunBusy(RuntimeError):
+    """Pemicu lain sedang memproses site yang sama — run ini dilewati.
+
+    Dilempar oleh penyedia yang mendukung anti-tumpang-tindih (lihat
+    ``PostgresForecastStore.site_run_lock``) bila kunci advisory per-site
+    sudah dipegang proses lain. Sengaja DILEWATI, bukan diantre: antrian
+    tetap menghasilkan batch kedua (sama saja dengan menulis forecast
+    duplikat setelah job pertama selesai). Pemicu kedua memperoleh
+    kondisi "sudah berjalan" dan berhenti tanpa menyentuh store.
+
+    Didefinisikan di sini (bukan di ``app/db.py``) supaya scheduler dan
+    endpoint job bisa menangkapnya tanpa mengimpor penyedia DB — lapisan
+    tetap bersih (lihat README "Pemisahan lapisan").
+    """
+
+
 class ForecastStore(ABC):
     """Antarmuka simpan/ambil forecast."""
 

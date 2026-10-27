@@ -154,6 +154,29 @@ def test_job_and_post_on_demand_are_identical(client, auth_headers):
     )
 
 
+def test_job_busy_lock_returns_409_not_duplicate_batch(client, auth_headers, monkeypatch):
+    """Run paralel di site sama → 409 E_RUN_BUSY; tidak ada batch tersimpan."""
+    from app.api import jobs as jobs_api
+    from app.storage import ForecastRunBusy
+
+    def busy(*_args, **_kwargs):
+        raise ForecastRunBusy("run untuk site PLTS_KUPANG sudah berjalan di pemicu lain")
+
+    # jobs.py mengimpor nama run_site_forecast langsung (bukan lewat modul),
+    # jadi yang dipatch adalah atribut MODUL JOBS — pola sama dengan
+    # test fetch_history di test_maps_domain_error (scheduler memanggil
+    # lewat namespace modulnya).
+    monkeypatch.setattr(jobs_api, "run_site_forecast", busy)
+    r = client.post(JOB, json={"site_id": SITE, "horizon": 7}, headers=auth_headers)
+    assert r.status_code == 409
+    err = r.json()["error"]
+    assert err["code"] == "E_RUN_BUSY"
+    assert set(err) >= {"code", "message", "request_id"}
+    latest = client.get("/api/v1/forecast/latest", params={"site_id": SITE},
+                        headers=auth_headers)
+    assert latest.status_code == 404, "run yang dilewati tidak boleh menulis batch"
+
+
 # ── galat domain → envelope §3.3 ─────────────────────────────────────────
 def test_job_maps_domain_error_to_envelope(client, auth_headers, monkeypatch):
     """ForecastError dari rantai job → envelope kontrak (bukan 500/traceback)."""
