@@ -127,6 +127,7 @@ _POINTS_SQL = """
 _PING_SQL = "SELECT 1"
 _HAS_TABLE_SQL = "SELECT to_regclass('forecast_result')"
 _HAS_RUN_TABLE_SQL = "SELECT to_regclass('forecast_run')"
+_HAS_ALERT_STATE_SQL = "SELECT to_regclass('forecast_alert_state')"
 
 # ── run log (6·03 / 7·04) ────────────────────────────────────────────────
 # Satu baris per run scheduler per site. JANGAN dibatasi constraint FK ke
@@ -142,6 +143,76 @@ _INSERT_RUN_FAILED_SQL = """
     INSERT INTO forecast_run (
         site_id, started_at, finished_at, status, rows_saved, error
     ) VALUES (%s, %s, %s, 'failed', 0, %s)
+"""
+
+# ── baca status run (monitor 7·04) ───────────────────────────────────────
+# N run TERBARU per site (urut started_at DESC, id DESC). Monitor memakai
+# deret ini untuk menghitung kegagalan beruntun: streak = run-run terbaru
+# yang berstatus 'failed' sampai run 'ok' pertama.
+_RUN_STATUS_SQL = """
+    SELECT status, started_at, error
+      FROM forecast_run
+     WHERE site_id = %(site_id)s
+     ORDER BY started_at DESC, id DESC
+     LIMIT %(limit)s
+"""
+# Run SUKSES terakhir — dasar deteksi "forecast basi" (tidak ada kesegaran).
+_LAST_OK_RUN_SQL = """
+    SELECT MAX(started_at)
+      FROM forecast_run
+     WHERE site_id = %(site_id)s AND status = 'ok'
+"""
+# Run terakhir apa pun — fallback ketika belum pernah ada run sukses.
+_LAST_RUN_SQL = """
+    SELECT MAX(started_at)
+      FROM forecast_run
+     WHERE site_id = %(site_id)s
+"""
+
+# ── state alert (migration 003) ──────────────────────────────────────────
+# Upsert state per (site, kondisi). `last_notified_at` hanya ditulis setelah
+# webhook sukses — jadi kegagalan pengiriman tidak menandai "sudah diberi
+# tahu" dan pemeriksaan berikutnya mencoba lagi.
+_ALERT_STATE_GET_SQL = """
+    SELECT site_id, alert_type, first_seen_at, active,
+           last_notified_at, recovered_at
+      FROM forecast_alert_state
+     WHERE site_id = %(site_id)s AND alert_type = %(alert_type)s
+"""
+_ALERT_STATE_UPSERT_SQL = """
+    INSERT INTO forecast_alert_state (
+        site_id, alert_type, first_seen_at, active,
+        last_notified_at, recovered_at
+    ) VALUES (
+        %(site_id)s, %(alert_type)s, %(first_seen_at)s, %(active)s,
+        %(last_notified_at)s, %(recovered_at)s
+    )
+    ON CONFLICT (site_id, alert_type) DO UPDATE
+       SET active           = EXCLUDED.active,
+           last_notified_at  = EXCLUDED.last_notified_at,
+           recovered_at      = EXCLUDED.recovered_at
+"""
+# Tandai "sudah diberi tahu" HANYA bila belum aktif atau cooldown lewat —
+# ini yang mencegah dua pemeriksaan tumpang-tindih mengirim pesan ganda.
+_ALERT_STATE_MARK_SQL = """
+    UPDATE forecast_alert_state
+       SET active = true,
+           last_notified_at = %(now)s,
+           recovered_at = NULL
+     WHERE site_id = %(site_id)s
+       AND alert_type = %(alert_type)s
+       AND (active = false
+            OR last_notified_at IS NULL
+            OR last_notified_at <= %(cooldown_before)s)
+"""
+# Tandai pemulihan (pesan "sudah normal" sudah terkirim).
+_ALERT_STATE_RECOVER_SQL = """
+    UPDATE forecast_alert_state
+       SET active = false,
+           recovered_at = %(now)s
+     WHERE site_id = %(site_id)s
+       AND alert_type = %(alert_type)s
+       AND active = true
 """
 
 # ── backfill aktual (6·04) ───────────────────────────────────────────────
@@ -317,6 +388,7 @@ class PostgresForecastStore(ForecastStore):
             with self._write_pool.connection() as conn:
                 row = conn.execute(_HAS_TABLE_SQL).fetchone()
                 run_row = conn.execute(_HAS_RUN_TABLE_SQL).fetchone()
+                alert_row = conn.execute(_HAS_ALERT_STATE_SQL).fetchone()
         except Exception as exc:
             self.close()
             raise DatabaseUnavailable(
@@ -337,6 +409,18 @@ class PostgresForecastStore(ForecastStore):
                 "(jalankan db/migrations/002_forecast_run.sql untuk 6·03)"
             )
         log.info("store: PostgreSQL aktif (forecast_result terverifikasi)")
+        # Tabel state alert (migration 003) opsional untuk service: monitor
+        # yang butuh it mendeteksinya sendiri dan gagal keras. Service tak
+        # boleh jatuh hanya karena tabel alert belum ada.
+        self._alert_state_table_ok = (
+            alert_row is not None and alert_row[0] is not None
+        )
+        if not self._alert_state_table_ok:
+            log.info(
+                "store: tabel forecast_alert_state belum ada — monitor alert "
+                "akan melaporkannya (jalankan "
+                "db/migrations/003_forecast_alert_state.sql)"
+            )
 
     @property
     def _pool(self) -> ConnectionPool:
@@ -551,3 +635,112 @@ class PostgresForecastStore(ForecastStore):
             cur = conn.execute(_FILL_PENDING_SQL, {"cutoff": cutoff})
             filled = cur.rowcount if cur.rowcount is not None and cur.rowcount >= 0 else 0
         return int(filled)
+
+    # ── monitoring / alert (7·04 — opsional di interface) ──────────────────
+    # Metode di bawah dipakai HANYA monitor eksternal (app/monitoring.py),
+    # bukan service. Keduanya menolak: monitor adalah pembaca run-log, bukan
+    # bagian dari jalur request.
+
+    def run_status_rows(self, site_id: str, limit: int = 20) -> list[tuple]:
+        """N run terbaru per site: ``(status, started_at, error)``.
+
+        Urut ``started_at DESC, id DESC`` — sama dengan urutan yang dipakai
+        monitor untuk menghitung kegagalan beruntun.
+        """
+        with self._read_pool.connection() as conn:
+            return conn.execute(
+                _RUN_STATUS_SQL, {"site_id": site_id, "limit": int(limit)}
+            ).fetchall()
+
+    def last_successful_run_at(self, site_id: str) -> datetime | None:
+        """``started_at`` run sukses terakhir, atau ``None`` bila belum pernah."""
+        with self._read_pool.connection() as conn:
+            row = conn.execute(_LAST_OK_RUN_SQL, {"site_id": site_id}).fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def last_run_at(self, site_id: str) -> datetime | None:
+        """``started_at`` run terakhir apa pun (sukses atau gagal)."""
+        with self._read_pool.connection() as conn:
+            row = conn.execute(_LAST_RUN_SQL, {"site_id": site_id}).fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def alert_state_get(self, site_id: str, alert_type: str) -> dict | None:
+        """State alert satu (site, kondisi) — ``None`` bila belum pernah ada."""
+        with self._read_pool.connection() as conn:
+            row = conn.execute(
+                _ALERT_STATE_GET_SQL,
+                {"site_id": site_id, "alert_type": alert_type},
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "site_id": row[0],
+            "alert_type": row[1],
+            "first_seen_at": row[2],
+            "active": bool(row[3]),
+            "last_notified_at": row[4],
+            "recovered_at": row[5],
+        }
+
+    def alert_state_ensure(self, site_id: str, alert_type: str,
+                           first_seen_at: datetime) -> None:
+        """Buat state bila belum ada (untuk grace "belum pernah jalan").
+
+        TIDAK menimpa state yang sudah ada — pemanggil membaca state lebih
+        dulu; fungsi ini hanya menjamin baris ada agar UPSERT berikutnya
+        punya tempat.
+        """
+        with self._write_pool.connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO forecast_alert_state (
+                    site_id, alert_type, first_seen_at, active
+                ) VALUES (%(site_id)s, %(alert_type)s, %(first_seen_at)s, false)
+                ON CONFLICT (site_id, alert_type) DO NOTHING
+                """,
+                {
+                    "site_id": site_id,
+                    "alert_type": alert_type,
+                    "first_seen_at": first_seen_at,
+                },
+            )
+
+    def alert_state_mark_notified(
+        self,
+        site_id: str,
+        alert_type: str,
+        *,
+        now: datetime,
+        cooldown_before: datetime,
+    ) -> bool:
+        """Tandai "sudah diberi tahu" — HANYA bila belum aktif atau cooldown
+        sudah lewat.
+
+        ``WHERE`` di query inilah penjaga anti-duplikat: dua pemeriksaan yang
+        tumpang-tindih tidak bisa keduanya menandai terkirim, sehingga pesan
+        ganda tidak terjadi meski webhook keduanya sempat sampai.
+        """
+        with self._write_pool.connection() as conn:
+            cur = conn.execute(
+                _ALERT_STATE_MARK_SQL,
+                {
+                    "site_id": site_id,
+                    "alert_type": alert_type,
+                    "now": now,
+                    "cooldown_before": cooldown_before,
+                },
+            )
+            return bool(cur.rowcount)
+
+    def alert_state_mark_recovered(self, site_id: str, alert_type: str,
+                                   *, now: datetime) -> bool:
+        """Tandai pemulihan (pesan 'sudah normal' terkirim). True bila ada
+        state aktif yang dipulihkan — dipakai supaya pesan pemulihan tidak
+        dikirim berulang."""
+        with self._write_pool.connection() as conn:
+            cur = conn.execute(
+                _ALERT_STATE_RECOVER_SQL,
+                {"site_id": site_id, "alert_type": alert_type, "now": now},
+            )
+            return bool(cur.rowcount)
+

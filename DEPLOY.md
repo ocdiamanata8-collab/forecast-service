@@ -73,9 +73,11 @@ tanpa menguji ulang (termasuk `tests/test_engine_golden.py` dan
    ```
 
    - **Sebelum start pertama** dengan DSN aktif, jalankan migration sekali:
-     `001_forecast_and_actual.sql` lalu `002_forecast_run.sql`
-     (folder `db/migrations/`). Tanpa tabel, startup sengaja **gagal cepat**
-     (`DatabaseUnavailable`) — tanpa fallback diam-diam ke in-memory.
+     `001_forecast_and_actual.sql` lalu `002_forecast_run.sql` lalu
+     `003_forecast_alert_state.sql` (folder `db/migrations/`). Tanpa tabel,
+     startup sengaja **gagal cepat** (`DatabaseUnavailable`) — tanpa fallback
+     diam-diam ke in-memory. Tabel `003` tidak menjatuhkan service, tapi
+     monitor alert akan melaporkannya sampai terpasang.
    - **`DATABASE_READONLY_URL` (opsional, 6·05)** — DSN user dengan hak baca
      saja; jalur `latest`/`history` (dashboard) memakainya, terpisah dari
      kredensial tulis. Kosongkan bila platform belum menyediakan user
@@ -111,15 +113,47 @@ tanpa menguji ulang (termasuk `tests/test_engine_golden.py` dan
 6. Verifikasi: `https://<nama-service>.onrender.com/api/v1/health`
    harus membalas `{"status":"ok", ...}`.
 
+4c. **Penjadwalan & alert — GitHub Actions (gratis, repo public)**.
+
+   Regenerasi per jam, backfill per jam, retensi harian, dan monitor
+   kegagalan dijalankan workflow GitHub Actions — **bukan** loop di dalam
+   proses web (loop web mati saat instance restart dan tak terlihat di log
+   deploy).
+
+   **Secrets** (Settings → Secrets and variables → Actions):
+
+   | Nama | Dipakai oleh | Isi |
+   |---|---|---|
+   | `DATABASE_URL` | `forecast-jobs`, `forecast-monitor`, `db-backup` | DSN PostgreSQL (sama dengan `DATABASE_URL` di Render) |
+   | `FORECAST_API_KEY` | `forecast-jobs` | Kunci konsumen API — dari secret manager, format `label:key` bila perlu label |
+   | `FORECAST_ALERT_WEBHOOK_URL` | `forecast-monitor` | Opsional — Slack/Teams/generic webhook untuk pesan alert |
+
+   **Variables** (opsional): `FORECAST_API_URL` (default
+   `https://ocdi.blitz.cloud`), `SITE_IDS` (default `PLTS_KUPANG`),
+   `FORECAST_RETENTION_DAYS` (kosong/0 = retensi mati),
+   `FORECAST_ALERT_FAILURE_STREAK` / `_STALE_HOURS` / `_REPEAT_HOURS`
+   (default 3 / 3 / 6).
+
+   - Tanpa `FORECAST_ALERT_WEBHOOK_URL` monitor tetap jalan: kondisi buruk
+     membuat job exit nonzero → **notifikasi email GitHub Actions** ke watcher
+     repo (setelan notifikasi akun/repo). Webhook menambah pesan ringkas
+     plus notifikasi pemulihan.
+   - Uji cepat: jalankan workflow `Forecast failure monitor (7·04)` lewat
+     **Run workflow** (`workflow_dispatch`) — tidak menunggu jadwal 15 menit.
+   - Scheduled workflow repo public **dinonaktifkan otomatis** bila repo tak
+     ada aktivitas 60 hari — pantau tab Actions dan aktifkan ulang.
+   - Jadwal memakai UTC; menit `:05/:20/:35/:50` dipakai sengaja (jadwal di
+     menit `:00` prone tertunda saat GitHub sibuk).
+
 ## Catatan penting untuk PoC
 
-- **Persistensi hilang saat restart**: `forecast/latest` dan
-  `forecast/history` memakai penyimpanan in-memory. Tapi scheduler Fase 4
-  mengisi ulang **otomatis saat startup** (tick pertama + regenerasi per
-  jam) dari tail `data/actuals.csv` — `GET /forecast/latest` langsung 200
-  dalam hitungan detik setelah deploy tanpa perlu memanggil
-  `POST /forecast` dulu (kontrak §5.1: POST on-demand memang tidak
-  menyimpan).
+- **Persistensi hilang saat restart** (tanpa `DATABASE_URL`): `forecast/latest`
+  dan `forecast/history` memakai penyimpanan in-memory. Warm tick startup
+  (**sekali**, bukan loop) mengisinya ulang otomatis dari tail
+  `data/actuals.csv` — `GET /forecast/latest` langsung 200 dalam hitungan
+  detik setelah deploy tanpa perlu memanggil `POST /forecast` dulu
+  (kontrak §5.1: POST on-demand memang tidak menyimpan). Regenerasi
+  berikutnya datang dari workflow GitHub Actions.
 - **Rate limit 60 request/menit per key** (kontrak §1.3) — cukup untuk
   PoC, tidak untuk polling ketat.
 - **Data aktual (2023–2025) sudah termuat** dari `data/actuals.csv` —

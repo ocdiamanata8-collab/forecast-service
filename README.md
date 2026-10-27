@@ -320,18 +320,18 @@ Test seluruh kontrak error (termasuk no-traceback, `details[]` terstruktur,
 Belum diimplementasikan (sengaja, menunggu keputusan §10 kontrak):
 `Idempotency-Key`, penyimpanan berbasis DB, API key dari vault.
 
-Scheduler rolling forecast **sudah berjalan** (Fase 4): job latar belakang
-memanggil `service.run_forecast()` dengan data tail `data/actuals.csv`,
-menyimpan hasil ke store, dan mengisi `GET /forecast/latest` +
-`/forecast/history` — tick pertama saat startup, lalu regenerasi **setiap 1 jam**.
+Regenerasi forecast berjalan **di luar proses web**: scheduler eksternal
+(GitHub Actions) memanggil job `POST /internal/v1/jobs/forecast` per jam; proses
+web sendiri hanya menjalankan **warm tick satu kali saat startup** supaya
+`GET /forecast/latest` langsung 200 setelah deploy.
 
-### Keputusan interval: satu jam (3600 detik)
+### Keputusan penjadwalan: satu jam, dijadwalkan di luar aplikasi
 
-**Jangan memperpendek interval tanpa keputusan operasional dan pengukuran.**
+**Interval, jangan diubah tanpa keputusan operasional dan pengukuran.**
 Satu jam menjadi titik awal produksi PLTS karena:
 
 - Kontrak §1.4 menyebut forecast diregenerasi minimal per jam; §5.2 memakai
-  SLA 90 menit untuk mendeteksi regenerasi yang terlambat. Interval 3600 detik
+  SLA 90 menit untuk mendeteksi regenerasi yang terlambat. Interval 1 jam
   menjaga forecast tetap dalam SLA tanpa menjadwalkan kerja berlebihan.
 - Sumber aktual saat ini `data/actuals.csv` — dataset tidak bertambah setiap
   menit. Forecast per menit akan menghitung ulang hasil dari data yang sama,
@@ -343,32 +343,86 @@ Satu jam menjadi titik awal produksi PLTS karena:
 - Interval lebih pendek juga menghabiskan kuota pemicu eksternal lebih cepat.
   Job harus dipanggil terpusat, bukan sekali per pengguna dashboard.
 
-Interval internal bersifat **fixed-delay**, bukan cron yang selaras dengan
-menit `00`: proses menjalankan tick saat startup, lalu tidur 3600 detik di
-antara tick. Jika kebijakan operasional memerlukan jadwal tepat di awal jam,
-gunakan cron eksternal (zona waktu server harus ditetapkan eksplisit):
+### Mengapa TIDAK loop Python di dalam proses web
+
+Loop tak berujung di dalam proses web **mati saat instance restart** dan
+**tidak terlihat di log deploy** — dua-duanya membuat kegagalan diam-diam.
+Oleh karena itu:
+
+- Regenerasi per jam → workflow `.github/workflows/forecast-jobs.yml`
+  (GitHub Actions, gratis untuk repo public; tiap run punya log & riwayat).
+- Backfill aktual per jam → `python -m app.backfill` (CLI sekali-jalan).
+- Retensi harian → `python -m app.retention` (default mati).
+- Di dalam proses web tersisa **warm tick satu kali** saat startup
+  (`SCHEDULER_ENABLED=true`, default) — agar `latest` langsung terisi setelah
+  deploy. Set `SCHEDULER_ENABLED=false` bila web tak boleh menulis forecast
+  sama sekali.
+
+Render Cron **tidak dipakai**: tidak tersedia di free tier (minimum ±$1/bulan
+per job). Kalau proses web di-scale multi-worker, warm tick di tiap worker
+menggandakan satu batch — set `SCHEDULER_ENABLED=false` di worker non-utama.
+
+### Horizon cron = 24 hari
+
+Cron dan warm tick memakai horizon yang sama (`DEFAULT_HORIZON = 24`), satu
+sumber di `app/scheduler.py`. Jendela validitas monitoring mengikuti nilai
+tersebut (`validUntil = ts + horizon`, lihat `KEPUTUSAN_5_07_KADALUARSA.md`).
+
+### Kalau menjadwalkan sendiri (bukan GitHub Actions)
 
 ```cron
 # Tiap menit ke-00 setiap jam, zona waktu server
-0 * * * * /srv/scripts/run_forecast.sh
+0 * * * * /srv/forecast-service/scripts/run_forecast.sh
 ```
 
-Jangan jalankan cron eksternal bersamaan dengan scheduler internal — itu akan
-menggandakan forecast dan baris riwayat. Bila memilih cron, set
-`SCHEDULER_ENABLED=false` pada service; wrapper eksternal memanggil job
-`POST /internal/v1/jobs/forecast` per `site_id`/`horizon` dengan header
-`X-API-Key`. Simpan key di secret manager, bukan di dalam script atau crontab.
+Wrapper `scripts/run_forecast.sh` membaca `FORECAST_API_URL`,
+`FORECAST_API_KEY`, `SITE_IDS`, `FORECAST_HORIZON` dari environment (key dari
+secret manager — bukan di dalam script atau crontab) dan memanggil job per
+site. **Jangan** menjalankan cron eksternal bersamaan dengan workflow
+GitHub Actions — itu akan menggandakan forecast dan baris riwayat.
 
-Aturan operasional scheduler internal:
+### Alert kegagalan (7·04)
 
-    SCHEDULER_ENABLED=false      # matikan job internal (default: true)
-    SCHEDULER_INTERVAL_SECONDS=3600   # 1 jam; ubah hanya setelah evaluasi
+Kegagalan forecasting yang **tidak terlihat selama sepekan** lebih berbahaya
+daripada layanan yang jelas-jelas down. Monitor berjalan tiap 15 menit
+(`.github/workflows/forecast-monitor.yml`), membaca run-log
+(tabel `forecast_run`), dan memberi tahu lewat dua kondisi **independen**:
 
-Store bawaan in-memory: forecast hilang saat proses restart, tapi scheduler
-mengisinya ulang otomatis pada tick startup. Dengan PostgreSQL (`DATABASE_URL`),
-forecast tetap tersimpan lintas restart. Pada mode multi-worker/replica,
-matikan scheduler internal di worker non-utama agar tiap proses tidak
-menghasilkan batch duplikat.
+| Kondisi | Ambang | Arti |
+|---|---|---|
+| `consecutive_failure` | **3 run gagal berturut-turut** per site | Job berjalan tapi meledak (model rusak, DB turun, actuals hilang) |
+| `stale_run` | **3 jam tanpa run sukses** per site | Job **tidak berjalan sama sekali** — cron mati, workflow dimatikan, deploy salah |
+
+Keduanya punya pesan dan notifikasi pemulihan sendiri. Site yang belum pernah
+running mendapat masa tenggang 3 jam (`first_seen_at`) supaya deploy baru tidak
+langsung memicu alarm palsu.
+
+Kanal notifikasi:
+
+1. **Webhook** — `FORECAST_ALERT_WEBHOOK_URL` (secret). Payload generik
+   `{"text": "..."}` (kompatibel Slack incoming webhook / Teams).
+2. **Email GitHub Actions** — job monitor exit nonzero saat kondisi terdeteksi
+   tanpa webhook, saat webhook gagal, atau saat pemeriksa sendiri gagal (DB
+   tak terjangkau / migration belum jalan). Pemeriksaan yang *hijau palsu*
+   lebih berbahaya daripada pemeriksaan merah.
+
+Notifikasi dikirim **sekali saat ambang terlewati**, diulang paling sering
+**tiap 6 jam** selama kondisi belum pulih, lalu satu **pesan pemulihan** saat
+kembali normal. State disimpan durable di `forecast_alert_state` (migration
+`003`) agar polling tiap 15 menit tidak menjadi spam; state hanya ditandai
+"terkirim" **setelah** webhook berhasil.
+
+```bash
+python -m app.monitoring      # pemeriksaan satu kali (dipanggil workflow)
+```
+
+Konfigurasi (semua opsional, default di dalam kode):
+
+    FORECAST_ALERT_FAILURE_STREAK=3   # gagal beruntun sebelum alert
+    FORECAST_ALERT_STALE_HOURS=3      # jam tanpa run sukses sebelum alert
+    FORECAST_ALERT_REPEAT_HOURS=6     # jeda minimal antar notifikasi ulang
+    FORECAST_ALERT_WEBHOOK_URL=       # secret — Slack/Teams/generic
+
 
 ---
 

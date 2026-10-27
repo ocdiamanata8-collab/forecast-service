@@ -1,0 +1,69 @@
+# Monitor kegagalan forecast (7·04) — pemeriksaan tiap 15 menit.
+#
+# TUJUAN: kegagalan forecasting yang tidak terlihat selama sepekan jauh lebih
+# berbahaya daripada layanan yang jelas-jelas down. Job ini membaca run-log
+# (tabel forecast_run) dan memberi tahu saat:
+#   - 3 run berturut-turut GAGAL per site (consecutive_failure), atau
+#   - tidak ada run SUKSES selama 3 jam (stale_run) — termasuk cron yang
+#     tidak berjalan sama sekali dan karenanya tidak menghasilkan baris gagal.
+#
+# Kanal notifikasi:
+#   1. Webhook (FORECAST_ALERT_WEBHOOK_URL, secret) — pesan ringkas.
+#   2. Exit nonzero bila kondisi terdeteksi tanpa webhook / webhook gagal →
+#      notifikasi email bawaan GitHub Actions ke watcher repo.
+#
+# Job ini TERPISAH dari forecast-jobs.yml: alert tidak boleh bergantung pada
+# workflow yang sedang dipantau.
+#
+# Setup (sekali) — Settings → Secrets and variables → Actions:
+#   Secrets : DATABASE_URL (sama dengan db-backup.yml & forecast-jobs.yml)
+#             FORECAST_ALERT_WEBHOOK_URL (opsional — Slack/Teams/generic)
+#   Variables (opsional): SITE_IDS (default PLTS_KUPANG),
+#             FORECAST_ALERT_FAILURE_STREAK (default 3),
+#             FORECAST_ALERT_STALE_HOURS (default 3),
+#             FORECAST_ALERT_REPEAT_HOURS (default 6).
+#
+# Jadwal di menit off-peak (:05/:20/:35/:50) — GitHub menunda workflow yang
+# dijadwalkan tepat di awal jam saat beban tinggi.
+name: Forecast failure monitor (7·04)
+
+on:
+  schedule:
+    - cron: "5,20,35,50 * * * *"
+  workflow_dispatch: {}   # uji manual / pemicu pasca-deploy
+
+permissions:
+  contents: read
+
+# Pemeriksaan tak boleh saling tumpang-tindih: run baru ANTRE, bukan
+# membatalkan yang sedang jalan (cancel-in-progress: false).
+concurrency:
+  group: forecast-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Pasang dependensi terkunci
+        run: pip install -r requirements.txt
+
+      - name: Periksa run-log & kirim alert bila perlu
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SITE_IDS: ${{ vars.SITE_IDS || 'PLTS_KUPANG' }}
+          FORECAST_ALERT_WEBHOOK_URL: ${{ secrets.FORECAST_ALERT_WEBHOOK_URL }}
+          FORECAST_ALERT_FAILURE_STREAK: ${{ vars.FORECAST_ALERT_FAILURE_STREAK || '3' }}
+          FORECAST_ALERT_STALE_HOURS: ${{ vars.FORECAST_ALERT_STALE_HOURS || '3' }}
+          FORECAST_ALERT_REPEAT_HOURS: ${{ vars.FORECAST_ALERT_REPEAT_HOURS || '6' }}
+        # Exit nonzero = kondisi buruk ATAU pemeriksaan sendiri gagal (DB tak
+        # terjangkau / migrasi belum jalan / webhook gagal) — notifikasi email
+        # Actions menyala. Pemeriksaan yang hijau palsu lebih berbahaya.
+        run: python -m app.monitoring
