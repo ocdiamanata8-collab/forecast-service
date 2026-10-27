@@ -85,6 +85,10 @@ def store():
         conn.execute("DELETE FROM forecast_run WHERE site_id IN (%s, %s)",
                      (SITE, "ZZ_GAGAL"))
         conn.execute("DELETE FROM forecast_result WHERE site_id = %s", (SITE,))
+        # State alert ikut dibersihkan: kuncinya (site, alert_type) dan
+        # monitor membaca state lama → hasil antar-test bisa bocor.
+        conn.execute("DELETE FROM forecast_alert_state WHERE site_id IN (%s, %s)",
+                     (SITE, "ZZ_GAGAL"))
     s.close()
 
 
@@ -200,8 +204,87 @@ def _runs(store, site: str) -> list[tuple]:
         ).fetchall()
 
 
+def _insert_run(store, site: str, status: str, started_at: datetime, error=None):
+    store.record_run(
+        site_id=site,
+        started_at=started_at,
+        finished_at=started_at + timedelta(seconds=1),
+        status=status,
+        error=error,
+    )
+
+
+def test_monitor_run_status_query_orders_newest_first(store):
+    """DB read API returns run log descending by started_at + deterministic id."""
+    from datetime import timezone as _tz
+
+    base = datetime(2026, 10, 20, 6, 0, tzinfo=_tz(timedelta(hours=8)))
+    for offset, status in enumerate(("ok", "failed", "failed", "failed")):
+        _insert_run(store, SITE, status, base + timedelta(hours=offset),
+                    error="test" if status == "failed" else None)
+    rows = store.run_status_rows(SITE, limit=3)
+    assert [row[0] for row in rows] == ["failed", "failed", "failed"]
+    assert rows == sorted(rows, key=lambda row: row[1], reverse=True)
+    assert store.last_successful_run_at(SITE) == base
+    assert store.last_run_at(SITE) == base + timedelta(hours=3)
+
+
+def test_alert_state_upsert_is_durable_and_idempotent(store):
+    """State alert per site/type survives read/write and upsert."""
+    from datetime import timezone as _tz
+
+    seen = datetime(2026, 10, 20, 6, 0, tzinfo=_tz(timedelta(hours=8)))
+    sent = seen + timedelta(hours=3)
+    store.alert_state_ensure(SITE, "consecutive_failure", seen)
+    first = store.alert_state_get(SITE, "consecutive_failure")
+    assert first is not None and first["active"] is False
+    assert first["first_seen_at"] == seen
+
+    assert store.alert_state_mark_notified(
+        SITE, "consecutive_failure", now=sent,
+        cooldown_before=sent - timedelta(hours=6),
+    ) is True
+    active = store.alert_state_get(SITE, "consecutive_failure")
+    assert active["active"] is True
+    assert active["last_notified_at"] == sent
+
+    # Ulangi ensure tidak menimpa first_seen_at/active (idempotent).
+    store.alert_state_ensure(SITE, "consecutive_failure", seen + timedelta(days=1))
+    after = store.alert_state_get(SITE, "consecutive_failure")
+    assert after["first_seen_at"] == seen
+    assert after["active"] is True
+
+    # Active + cooldown belum lewat → CAS guard menolak notifikasi duplikat.
+    assert store.alert_state_mark_notified(
+        SITE, "consecutive_failure", now=sent + timedelta(hours=1),
+        cooldown_before=sent - timedelta(hours=5),
+    ) is False
+    # Tepat setelah cooldown → notifikasi berulang boleh.
+    repeat_at = sent + timedelta(hours=6)
+    assert store.alert_state_mark_notified(
+        SITE, "consecutive_failure", now=repeat_at,
+        cooldown_before=sent,
+    ) is True
+    assert store.alert_state_get(SITE, "consecutive_failure")["last_notified_at"] == repeat_at
+
+    assert store.alert_state_mark_recovered(
+        SITE, "consecutive_failure", now=repeat_at + timedelta(minutes=1)
+    ) is True
+    recovered = store.alert_state_get(SITE, "consecutive_failure")
+    assert recovered["active"] is False
+    assert recovered["recovered_at"] == repeat_at + timedelta(minutes=1)
+    assert store.alert_state_mark_recovered(
+        SITE, "consecutive_failure", now=repeat_at + timedelta(minutes=2)
+    ) is False
+
+
 def test_run_log_records_success_and_failure(store, monkeypatch):
-    """Run sukses & gagal keduanya tercatat; sukses menunjuk batch-nya."""
+    """Run sukses & gagal keduanya tercatat; sukses menunjuk batch-nya.
+
+    Jejak run dicatat DI DALAM ``run_site_forecast`` (bukan di ``tick``), jadi
+    test ini mem-patch ``fetch_history`` — bukan ``run_site_forecast`` — agar
+    jalur pencatatan yang asli ikut teruji.
+    """
     import numpy as np
     import pandas as pd
 
@@ -213,17 +296,12 @@ def test_run_log_records_success_and_failure(store, monkeypatch):
     values = np.clip(180 + 60 * np.sin(2 * np.pi * day / 365.25), 0, None)
     hist = [(ts.to_pydatetime(), float(v)) for ts, v in zip(idx, values)]
 
-    real = scheduler.run_site_forecast
-
-    def fake(_store, site_id, **kw):
+    def fake_fetch(site_id, **_kw):
         if site_id == "ZZ_GAGAL":
             raise RuntimeError("sintetis: actuals hilang")
-        # jalankan rantai asli tapi dengan history sintetis & site_id uji
-        return scheduler.run_and_store_forecast(
-            _store, site_id=SITE, history=hist, horizon=7
-        )
+        return hist
 
-    monkeypatch.setattr(scheduler, "run_site_forecast", fake)
+    monkeypatch.setattr(scheduler, "fetch_history", fake_fetch)
     saved = scheduler.tick(store, ["ZZ_GAGAL", SITE])
     assert len(saved) == 1  # hanya site sukses
 
@@ -231,7 +309,7 @@ def test_run_log_records_success_and_failure(store, monkeypatch):
     assert len(rows) == 1
     site, status, rows_saved, fid, gen_at, mv, err = rows[0]
     assert status == "ok"
-    assert rows_saved == 7
+    assert rows_saved == scheduler.DEFAULT_HORIZON
     assert fid is not None and str(fid) == saved[0]
     assert gen_at is not None
     assert mv is not None
@@ -242,6 +320,35 @@ def test_run_log_records_success_and_failure(store, monkeypatch):
     assert len(fail_rows) == 1
     assert fail_rows[0][1] == "failed"
     assert "sintetis" in (fail_rows[0][6] or "")
+
+
+def test_run_site_forecast_records_run_without_tick(store, monkeypatch):
+    """``run_site_forecast`` sendiri mencatat run — jalur endpoint job & cron
+    eksternal memanggil fungsi itu LANGSUNG (tanpa ``tick``), jadi jejak run
+    harus ada di sana juga; kalau tidak, run di luar aplikasi tak terlihat.
+    """
+    import numpy as np
+    import pandas as pd
+
+    from app import scheduler
+    from app.preprocessing import DEFAULT_TIMEZONE
+
+    idx = pd.date_range("2024-01-01", periods=90, freq="D", tz=DEFAULT_TIMEZONE)
+    day = idx.dayofyear.to_numpy(dtype="float64")
+    values = np.clip(180 + 60 * np.sin(2 * np.pi * day / 365.25), 0, None)
+    hist = [(ts.to_pydatetime(), float(v)) for ts, v in zip(idx, values)]
+
+    monkeypatch.setattr(scheduler, "fetch_history", lambda _site, **_kw: hist)
+    item = scheduler.run_site_forecast(store, SITE, horizon=scheduler.DEFAULT_HORIZON)
+
+    rows = _runs(store, SITE)
+    assert len(rows) == 1, "run langsung harus tercatat seperti run via tick"
+    site, status, rows_saved, fid, gen_at, mv, err = rows[0]
+    assert status == "ok"
+    assert rows_saved == scheduler.DEFAULT_HORIZON
+    assert str(fid) == item.forecast_id
+    assert gen_at is not None
+    assert err is None
 
 
 def test_each_run_writes_its_own_generated_at(store, monkeypatch):
@@ -258,12 +365,7 @@ def test_each_run_writes_its_own_generated_at(store, monkeypatch):
     values = np.clip(180 + 60 * np.sin(2 * np.pi * day / 365.25), 0, None)
     hist = [(ts.to_pydatetime(), float(v)) for ts, v in zip(idx, values)]
 
-    def fake(_store, site_id, **kw):
-        return scheduler.run_and_store_forecast(
-            _store, site_id=SITE, history=hist, horizon=7
-        )
-
-    monkeypatch.setattr(scheduler, "run_site_forecast", fake)
+    monkeypatch.setattr(scheduler, "fetch_history", lambda _site, **_kw: hist)
     scheduler.tick(store, [SITE])
     scheduler.tick(store, [SITE])
 
@@ -401,47 +503,24 @@ def test_backfill_never_overwrites_filled_value(store):
     )
 
 
-def test_backfill_loop_survives_actuals_failure(store, monkeypatch):
-    """Kegagalan CSV tidak mematikan loop — dicatat, siklus berikutnya lanjut."""
-    import asyncio
+def test_backfill_once_raises_on_actuals_failure(store, monkeypatch):
+    """Kegagalan CSV pada satu-shot backfill TERLIHAT (exception), bukan hilang.
 
+    Loop internal sudah dihapus — backfill kini job sekali-jalan
+    (``python -m app.backfill``) yang exit nonzero saat gagal, sehingga
+    kegagalan terlihat di log runner CI, bukan tenggelam di dalam loop.
+    """
+    from app import actuals as actual_data
     from app import backfill
     from app.actuals import ActualsUnavailable
 
     def boom(**_kw):
         raise ActualsUnavailable("CSV hilang")
 
-    from app import actuals as actual_data
-
     monkeypatch.setattr(actual_data, "load_actual_series", boom)
 
-    runs: list[dict] = []
-
-    calls = {"n": 0}
-
-    def fake_run(_store, *, sites, cutoff=None):  # noqa: ANN001
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise ActualsUnavailable("CSV hilang")  # siklus pertama gagal
-        runs.append({"sites": list(sites)})
-        return {"synced": 0, "filled": 0}
-
-    async def no_sleep(_seconds):  # noqa: ARG001
-        return None
-
-    async def scenario():
-        task = asyncio.create_task(
-            backfill.backfill_loop(store, [SITE], run=fake_run, sleep=no_sleep)
-        )
-        await asyncio.sleep(0.05)  # beri waktu 2 siklus
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-    asyncio.run(scenario())
-    assert runs, "loop harus tetap berjalan setelah kegagalan siklus pertama"
+    with pytest.raises(ActualsUnavailable):
+        backfill.backfill_once(store, sites=[SITE])
 
 
 # ===========================================================================

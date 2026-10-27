@@ -153,6 +153,10 @@ def test_scheduler_disabled_via_env(monkeypatch):
     with TestClient(create_app()) as client:
         assert client.app.state.scheduler_enabled is False
         assert client.app.state.scheduler_task is None
+        # Tidak ada satu pun task asyncio dari lifespan (loop sudah dihapus;
+        # guard ini yang mencegah loop kembali lewat refactor berikutnya).
+        assert client.app.state.backfill_task is None
+        assert client.app.state.retention_task is None
         assert client.app.state.store.count() == 0
         r = client.get("/api/v1/forecast/latest",
                        params={"site_id": "PLTS_KUPANG"}, headers=H)
@@ -160,30 +164,22 @@ def test_scheduler_disabled_via_env(monkeypatch):
         assert r.json()["error"]["code"] == "E_NO_FORECAST"
 
 
-def test_scheduler_enabled_via_env(monkeypatch):
+def test_scheduler_enabled_runs_startup_warm_tick_only(monkeypatch):
+    """Startup performs one warm tick; web process creates no recurring task."""
     monkeypatch.setenv("SCHEDULER_ENABLED", "true")
     with TestClient(create_app()) as client:
         assert client.app.state.scheduler_enabled is True
-        task = client.app.state.scheduler_task
-        assert task is not None and not task.done()
-        # Tick startup sudah dijalankan & ditunggu: latest langsung terisi.
+        assert client.app.state.scheduler_task is None
+        assert client.app.state.backfill_task is None
+        assert client.app.state.retention_task is None
         r = client.get("/api/v1/forecast/latest",
                        params={"site_id": "PLTS_KUPANG"}, headers=H)
         assert r.status_code == 200, r.text
-        assert len(r.json()["forecast"]) == scheduler.DEFAULT_HORIZON
-        # Loop berhenti bersih saat shutdown lifespan (context keluar).
-
-
-def test_interval_from_env():
-    assert scheduler.interval_from_env({}) == scheduler.DEFAULT_INTERVAL_SECONDS
-    assert scheduler.interval_from_env({"SCHEDULER_INTERVAL_SECONDS": "120"}) == 120.0
-    assert scheduler.interval_from_env({"SCHEDULER_INTERVAL_SECONDS": "0"}) == 1.0
-    assert scheduler.interval_from_env({"SCHEDULER_INTERVAL_SECONDS": "abc"}) \
-        == scheduler.DEFAULT_INTERVAL_SECONDS
+        assert len(r.json()["forecast"]) == scheduler.DEFAULT_HORIZON == 24
 
 
 # ---------------------------------------------------------------------------
-# 5. Kegagalan per-site tidak mematikan tick; loop terus berjalan
+# 5. Kegagalan per-site tidak mematikan tick; site berikutnya tetap diproses
 # ---------------------------------------------------------------------------
 def test_tick_survives_failed_site(monkeypatch):
     store = InMemoryForecastStore()
@@ -212,31 +208,9 @@ def test_tick_continues_to_next_site_after_failure(monkeypatch):
     monkeypatch.setattr(scheduler, "run_site_forecast", fake)
     saved = scheduler.tick(store, ["PLTS_GAGAL", "PLTS_KUPANG"])
 
-    assert attempted == ["PLTS_GAGAL", "PLTS_KUPANG"]  # loop tidak berhenti
+    assert attempted == ["PLTS_GAGAL", "PLTS_KUPANG"]  # tick tidak berhenti
     assert len(saved) == 1
     assert store.latest("PLTS_KUPANG") is not None
-
-
-def test_scheduler_loop_ticks_each_interval(monkeypatch):
-    """Loop: tick → tidur → tick → ... dan berhenti bersih saat dibatalkan."""
-    store = InMemoryForecastStore()
-    ticks: list[int] = []
-
-    def fake_tick(_store, _sites):
-        ticks.append(len(ticks) + 1)
-        return []
-
-    async def fake_sleep(_interval: float):
-        if len(ticks) >= 3:
-            raise asyncio.CancelledError  # simulasi shutdown
-        await asyncio.sleep(0)
-
-    with pytest.raises(asyncio.CancelledError):
-        asyncio.run(scheduler.scheduler_loop(
-            store, ("PLTS_KUPANG",), interval=1,
-            run_tick=fake_tick, sleep=fake_sleep,
-        ))
-    assert ticks == [1, 2, 3]  # tick pertama sebelum tidur (immediate=True)
 
 
 # ---------------------------------------------------------------------------

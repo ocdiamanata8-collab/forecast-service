@@ -1,0 +1,94 @@
+# Penjadwalan job forecast — scheduler EKSTERNAL (keputusan README).
+#
+# Mengapa di sini, bukan loop Python di dalam proses web:
+#   - Loop tak berujung di proses web mati saat instance restart dan tidak
+#     terlihat di log deploy — kegagalan jadi diam-diam.
+#   - GitHub Actions menjadwalkan dan mencatat tiap run (log + riwayat yang
+#     bisa ditinjau), gratis untuk repo public.
+#   - Render cron tidak dipakai: tidak tersedia di free tier (min ~$1/bln/job).
+#
+# Setup (sekali) — Settings → Secrets and variables → Actions:
+#   Secrets : FORECAST_API_KEY  (kunci konsumen API, dari secret manager)
+#             DATABASE_URL       (dipakai juga oleh db-backup.yml)
+#   Variables (opsional): FORECAST_API_URL (default https://ocdi.blitz.cloud),
+#             SITE_IDS (default PLTS_KUPANG), FORECAST_RETENTION_DAYS
+#             (kosong/0 = job retensi dilewati — default mati).
+#
+# Job forecast sengaja HTTP-ONLY (tanpa pip install / model): runner tidak
+# perlu model.pkl yang tidak di-track; ia cukup memanggil endpoint job lewat
+# scripts/run_forecast.sh. Backfill & retensi memakai CLI Python sekali-jalan.
+#
+# Cadangan: tiap cron memicu HANYA job yang cocok (github.event.schedule),
+# sehingga tiga jadwal dalam satu file tidak saling menyalakan.
+# Hindari menit ke-00 — jadwal GitHub di awal jam rawan tertunda (dokumentasi
+# GitHub: high load near start of hour).
+name: Scheduled forecast jobs
+
+on:
+  schedule:
+    - cron: "17 * * * *"   # regenerasi forecast per jam
+    - cron: "37 * * * *"   # backfill aktual per jam
+    - cron: "23 3 * * *"   # retensi harian 03:23 UTC = 11:23 WITA
+  workflow_dispatch: {}     # uji manual / pemicu pasca-deploy
+
+permissions:
+  contents: read            # tanpa tulis apa pun — job hanya memanggil API/CLI
+
+# Satu job jalan pada satu waktu; run baru ANTRE, tidak membatalkan yang
+# berjalan (cancel-in-progress: false) — pemeriksaan tak boleh terputus.
+concurrency:
+  group: forecast-jobs
+  cancel-in-progress: false
+
+jobs:
+  forecast:
+    if: github.event.schedule == '17 * * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # HTTP-only: tanpa setup-python, tanpa pip, tanpa model.
+      - name: Panggil job forecast (per site)
+        env:
+          FORECAST_API_URL: ${{ vars.FORECAST_API_URL || 'https://ocdi.blitz.cloud' }}
+          FORECAST_API_KEY: ${{ secrets.FORECAST_API_KEY }}
+          SITE_IDS: ${{ vars.SITE_IDS || 'PLTS_KUPANG' }}
+          # 24 = DEFAULT_HORIZON (satu sumber dengan warm tick & endpoint job).
+          FORECAST_HORIZON: "24"
+        run: bash scripts/run_forecast.sh
+
+  backfill:
+    if: github.event.schedule == '37 * * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Pasang dependensi terkunci
+        run: pip install -r requirements.txt
+      - name: Sinkron aktual + isi baris yang sudah lewat
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SITE_IDS: ${{ vars.SITE_IDS || 'PLTS_KUPANG' }}
+        run: python -m app.backfill
+
+  retention:
+    # Default mati: FORECAST_RETENTION_DAYS kosong/0 → job dilewati sama
+    # sekali (menghapus tidak boleh terjadi diam-diam, lihat app/retention.py).
+    if: github.event.schedule == '23 3 * * *' && vars.FORECAST_RETENTION_DAYS != '' && vars.FORECAST_RETENTION_DAYS != '0'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Pasang dependensi terkunci
+        run: pip install -r requirements.txt
+      - name: Hapus batch melebihi retensi
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FORECAST_RETENTION_DAYS: ${{ vars.FORECAST_RETENTION_DAYS }}
+          FORECAST_RETENTION_PRUNE_ACTUALS: ${{ vars.FORECAST_RETENTION_PRUNE_ACTUALS || 'false' }}
+        run: python -m app.retention

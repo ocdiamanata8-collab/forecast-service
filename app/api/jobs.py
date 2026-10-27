@@ -46,7 +46,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import Field
 
 from app import service
-from app.scheduler import run_site_forecast
+from app.scheduler import DEFAULT_HORIZON, run_site_forecast
 from app.schemas import StrictSchema
 from app.security import (
     FastApiError,
@@ -67,10 +67,11 @@ class ForecastJobRequest(StrictSchema):
 
     ``horizon`` strict: ``"7"`` (string) dan ``7.5`` harus DITOLAK, bukan
     dinomalkan diam-diam (regresi yang sama dengan ``ForecastRequest``).
+    Default satu sumber dengan warm tick/cron: ``DEFAULT_HORIZON``.
     """
 
     site_id: str = Field(pattern=r"^[A-Z]{2,4}[_A-Z0-9]{2,12}$")
-    horizon: int = Field(default=24, ge=1, le=30, strict=True)
+    horizon: int = Field(default=DEFAULT_HORIZON, ge=1, le=30, strict=True)
 
 
 class ForecastJobResponse(StrictSchema):

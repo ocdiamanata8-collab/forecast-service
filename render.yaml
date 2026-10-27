@@ -11,6 +11,14 @@
 #   - Tidak ada persistensi storage — forecast/latest disimpan in-memory,
 #     hilang saat restart. Untuk data historis, panggil /forecast/actual.
 #
+# PENJADWALAN: TIDAK memakai layanan Render Cron — tidak tersedia di free tier
+# (minimum ±$1/bulan per job). Regenerasi per jam, backfill, retensi, dan
+# monitor alert dijalankan GitHub Actions (gratis untuk repo public):
+#   .github/workflows/forecast-jobs.yml    (regenerasi/backfill/retensi)
+#   .github/workflows/forecast-monitor.yml (alert kegagalan 7·04)
+# Service web ini hanya menjalankan warm tick SATU KALI saat startup
+# (SCHEDULER_ENABLED) supaya /forecast/latest langsung terisi setelah deploy.
+#
 # Set API_KEYS di Environment Variables sebelum pertama kali deploy —
 # tanpa itu endpoint ber-key membalas 401 (by design, lihat app/main.py).
 # Format per konsumen (kontrak §1.1): API_KEYS=<label>:<kunci>,<label>:<kunci>

@@ -9,9 +9,8 @@ Retensi HANYA aktif bila di-set eksplisit:
 
     FORECAST_RETENTION_DAYS=365      # hapus batch > 365 hari (opsional)
     FORECAST_RETENTION_PRUNE_ACTUALS=false   # pertahankan deret aktual (default)
-    RETENTION_INTERVAL_SECONDS=86400 # interval cek (default: 1× sehari)
 
-Dampak keputusan:
+Jadwal penghapusan dijalankan **sekali sehari** oleh job scheduler eksternal;
 
 - Batch dihapus UTUH per ``forecast_id`` — riwayat run tidak pernah
   terpotong di tengah (bukti 6·03 tetap utuh per run).
@@ -20,24 +19,26 @@ Dampak keputusan:
 - Backup (``scripts/backup_db.py``) terpisah dan sebaiknya dijadwalkan cron
   berbeda — retensi mengurangi data online, backup menjaga kemampuan pulih.
 
+Penjadwalan berulang dilakukan di luar proses web (GitHub Actions harian,
+lihat ``.github/workflows/forecast-jobs.yml``; job otomatis dilewati bila
+retensi belum aktif). Loop di dalam proses web dihapus: mati saat restart dan
+tidak terlihat di log deploy. CLI one-shot:
+
+    python -m app.retention
+
 Sama seperti backfill: tanpa ``DATABASE_URL`` (PoC in-memory) tidak ada yang
 dipanggil — store tanpa ``prune_forecasts`` dilewati tanpa error.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
-from typing import Awaitable, Callable
 
 log = logging.getLogger("app.retention")
 
 #: Default: JANGAN MENYIMPAN JADWAL HAPUS — 0 = tidak pernah dihapus.
 DEFAULT_RETENTION_DAYS = 0
-
-#: Cek per hari — retensi tidak perlu lebih sering dari itu.
-DEFAULT_INTERVAL_SECONDS = 86400.0
 
 
 def retention_days_from_env(env: dict[str, str] | None = None) -> int:
@@ -82,32 +83,38 @@ def prune_once(store, *, days: int, prune_actuals: bool) -> dict[str, int] | Non
     return summary
 
 
-async def retention_loop(
-    store,
-    *,
-    days: int,
-    prune_actuals: bool = True,
-    interval: float = DEFAULT_INTERVAL_SECONDS,
-    immediate: bool = False,
-    run: Callable[..., dict[str, int] | None] | None = None,
-    sleep: Callable[[float], Awaitable[None]] | None = None,
-) -> None:
-    """Loop retensi: (opsional segera) → tidur interval → prune → ...
+def _main() -> int:
+    """CLI sekali-jalan: ``python -m app.retention``.
 
-    Kegagalan satu siklus dicatat dan dicoba lagi berikutnya — sama seperti
-    loop backfill (7·04: kegagalan terlihat, tidak mematikan layanan).
+    Dipakai job GitHub Actions (jadwal harian) & pemanggilan manual. Tanpa
+    ``DATABASE_URL`` → exit 1 (tidak ada tempat menghapus). Retensi default
+    mati (``FORECAST_RETENTION_DAYS`` kosong/0) → exit 0 tanpa menghapus apa
+    pun — menghapus adalah tindakan tak bisa dibatalkan, jadi tidak pernah
+    terjadi diam-diam.
     """
-    do_run = run or (lambda: prune_once(store, days=days, prune_actuals=prune_actuals))
-    do_sleep = sleep or asyncio.sleep
+    from app.db import PostgresForecastStore
 
-    async def once() -> None:
-        try:
-            await asyncio.to_thread(do_run)
-        except Exception:
-            log.exception("retensi gagal — mencoba lagi pada siklus berikutnya")
+    dsn = os.environ.get("DATABASE_URL", "").strip()
+    if not dsn:
+        print("DATABASE_URL tidak disetel — retensi butuh penyedia DB.")
+        return 1
+    days = retention_days_from_env()
+    if days <= 0:
+        print("retensi mati (FORECAST_RETENTION_DAYS kosong/0) — tidak ada "
+              "yang dihapus (bukti akurasi, volume kecil)")
+        return 0
+    prune_actuals = prune_actuals_enabled()
+    store = PostgresForecastStore(dsn)
+    try:
+        summary = prune_once(store, days=days, prune_actuals=prune_actuals)
+    finally:
+        store.close()
+    if summary is None:
+        print("store tanpa dukungan prune_forecasts — dilewati")
+        return 0
+    print(f"retensi selesai: {summary}")
+    return 0
 
-    if immediate:
-        await once()
-    while True:
-        await do_sleep(interval)
-        await once()
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

@@ -395,7 +395,7 @@
 </section>
 
 <section>
-  <h2>4 · Forecast terbaru tersimpan <span class="hint">(scheduler Fase 4: tick saat startup, regenerasi per jam — verifikasi endpoint yang sama dengan monitoring)</span></h2>
+  <h2>4 · Forecast terbaru tersimpan <span class="hint">(warm tick saat startup + regenerasi per jam via GitHub Actions — verifikasi endpoint yang sama dengan monitoring)</span></h2>
   <div class="row">
     <button class="ghost" id="latestBtn">GET /forecast/latest</button>
     <span class="muted">bukan untuk pengguna akhir — hanya verifikasi endpoint</span>
@@ -872,10 +872,10 @@ async function loadLatest() {
     const expected = ["E_NO_FORECAST", "E_SITE_UNKNOWN"];
     if (expected.includes(code)) {
       audit("latest: envelope error sesuai kontrak §3.3/§6.1", true,
-            `${r.status} ${code} — keadaan ${code === "E_NO_FORECAST" ? "scheduler dinonaktifkan atau belum menyelesaikan tick pertama" : "site tak terdaftar"}`);
+            `${r.status} ${code} — keadaan ${code === "E_NO_FORECAST" ? "job terjadwal belum mengisi (cek GitHub Actions) atau warm tick dinonaktifkan" : "site tak terdaftar"}`);
       $("fcErr").innerHTML += `
         <div class="muted" style="margin-top:6px">Kondisi normal:
-          <b>${code === "E_NO_FORECAST" ? "forecast belum tersimpan — periksa SCHEDULER_ENABLED dan log startup; POST /forecast sengaja tidak menyimpan (kontrak §5.1)." : "site tidak terdaftar di SITE_IDS."}</b>
+          <b>${code === "E_NO_FORECAST" ? "forecast belum tersimpan — periksa workflow GitHub Actions (forecast-jobs) dan SCHEDULER_ENABLED; POST /forecast sengaja tidak menyimpan (kontrak §5.1)." : "site tidak terdaftar di SITE_IDS."}</b>
           Bukan pelanggaran kontrak.</div>`;
     } else {
       audit("latest diambil", false, String(r.status));

@@ -38,7 +38,11 @@ from app.artifacts import ArtifactError, load_artifacts
 from app import backfill
 from app import retention
 from app.db import DatabaseUnavailable, PostgresForecastStore
-from app.scheduler import enabled_from_env, interval_from_env, scheduler_loop, tick as scheduler_tick
+from app.scheduler import (
+    DEFAULT_HORIZON,
+    enabled_from_env,
+    tick as scheduler_tick,
+)
 from app.security import (
     FastApiError,
     error_response,
@@ -189,94 +193,71 @@ async def lifespan(app: FastAPI):
     app.state.model_loaded = True
 
     # ------------------------------------------------------------------
-    # Scheduler rolling forecast (Fase 4 — kontrak §5.1/§8).
+    # Warm tick forecast (kontrak §5.1/§8) — SEKALI SAAT STARTUP, BUKAN LOOP.
     #
     # POST /forecast TIDAK menyimpan hasil; pengisi latest/history adalah
-    # job latar belakang ini, memanggil rantai IDENTIK (service.run_forecast).
-    # Tick pertama dijalankan dan DITUNGGU saat startup supaya
+    # job terjadwal._REGENERASI BERULANG dijadwalkan DI LUAR proses web
+    # (GitHub Actions — `.github/workflows/forecast-jobs.yml`): loop tak
+    # berujung di dalam proses web mati saat instance restart dan tidak
+    # terlihat di log deploy.
+    #
+    # Yang tersisa di sini: SATU tick yang DITUNGGU saat startup, supaya
     # GET /forecast/latest langsung 200 sebelum deploy dilaporkan selesai —
-    # monitoring tidak perlu menunggu satu jam. Interval kemudian per jam
-    # (§1.4 / SLA §5.2). Matikan dengan SCHEDULER_ENABLED=false (test &
-    # proses worker sekunder).
+    # monitoring tidak perlu menunggu jadwal berikutnya. Matikan dengan
+    # SCHEDULER_ENABLED=false (test & worker sekunder).
     # ------------------------------------------------------------------
     app.state.scheduler_enabled = enabled_from_env()
-    app.state.scheduler_interval = interval_from_env()
+    #: Selalu None — proses web TIDAK menjalankan loop berkala (lihat di atas).
+    #: Atribut dipertahankan sebagai penanda eksplisit bagi test & monitoring.
     app.state.scheduler_task = None
     if app.state.scheduler_enabled:
         sites = sorted(app.state.known_sites)
         await asyncio.to_thread(
             scheduler_tick, app.state.store, sites
         )
-        app.state.scheduler_task = asyncio.create_task(
-            scheduler_loop(
-                app.state.store, sites, interval=app.state.scheduler_interval,
-                immediate=False,  # tick pertama sudah dijalankan & ditunggu di atas
-            )
-        )
         log.info(
-            "scheduler aktif: site=%s interval=%ss",
-            sites, app.state.scheduler_interval,
+            "warm tick selesai: site=%s horizon=%s — regenerasi per jam "
+            "dijadwalkan scheduler eksternal (GitHub Actions), bukan proses ini",
+            sites, DEFAULT_HORIZON,
         )
+    else:
+        log.info("SCHEDULER_ENABLED=false — web tidak menjalankan warm tick; "
+                 "forecast tersimpan hanya dari job terjadwal eksternal")
 
-    # Backfill aktual (6·04) — hanya bila store mendukung (penyedia DB);
-    # tanpa DATABASE_URL tidak ada yang bisa diisi (akurasi butuh Fase 6).
+    # Backfill aktual (6·04) — SEKALI saat startup, hanya bila store mendukung
+    # (penyedia DB); tanpa DATABASE_URL tidak ada yang bisa diisi (akurasi
+    # butuh Fase 6). Pengisian berkelanjutan setelahnya dilakukan job
+    # eksternal (`python -m app.backfill`).
     app.state.backfill_task = None
     if callable(getattr(app.state.store, "fill_pending_actuals", None)):
         sites = sorted(app.state.known_sites)
-        interval = backfill.interval_from_env()
-        app.state.backfill_task = asyncio.create_task(
-            backfill.backfill_loop(app.state.store, sites, interval=interval)
-        )
-        log.info("backfill aktual aktif: site=%s interval=%ss", sites, interval)
+        try:
+            summary = await asyncio.to_thread(
+                backfill.backfill_once, app.state.store, sites=sites
+            )
+            log.info("backfill aktual (warm, sekali): site=%s synced=%s filled=%s",
+                     sites, summary["synced"], summary["filled"])
+        except Exception:
+            # Warm-init adalah kenyamanan, bukan syarat: kegagalan di sini
+            # tidak boleh menjatuhkan startup — job terjadwal akan mengulanginya.
+            log.exception("backfill warm gagal — job terjadwal eksternal "
+                          "akan mencoba lagi")
 
-    # Retensi (6·06) — DEFAULT MATI: FORECAST_RETENTION_DAYS tidak disetel
-    # atau 0 → tidak ada yang dihapus (bukti akurasi; volume kecil, lihat
-    # app/retention.py). Aktifkan eksplisit bila kebijakan data menuntut.
+    # Retensi (6·06) — TIDAK dijalankan di proses web. Penghapusan batch
+    # dijalankan job harian eksternal (`python -m app.retention`) dan default
+    # mati: FORECAST_RETENTION_DAYS tidak disetel atau 0 → tidak ada yang
+    # dihapus (bukti akurasi; volume kecil, lihat app/retention.py).
     app.state.retention_task = None
     retention_days = retention.retention_days_from_env()
-    if retention_days > 0 and callable(
-        getattr(app.state.store, "prune_forecasts", None)
-    ):
-        interval = float(os.environ.get("RETENTION_INTERVAL_SECONDS", "86400") or 86400)
-        app.state.retention_task = asyncio.create_task(
-            retention.retention_loop(
-                app.state.store,
-                days=retention_days,
-                prune_actuals=retention.prune_actuals_enabled(),
-                interval=max(interval, 60.0),
-            )
-        )
-        log.info(
-            "retensi AKTIF: hapus forecast >%s hari, interval %ss "
-            "(default: mati / simpan selamanya)",
-            retention_days, interval,
-        )
+    if retention_days > 0:
+        log.info("retensi DIJADWALKAN (FORECAST_RETENTION_DAYS=%s) — dijalankan "
+                 "job harian eksternal, bukan dari proses web", retention_days)
     else:
         log.info("retensi mati (FORECAST_RETENTION_DAYS=%s) — data disimpan "
                  "selamanya (bukti akurasi, volume kecil)", retention_days)
     yield
 
-    task = app.state.scheduler_task
-    if task is not None:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-    backfill_task = app.state.backfill_task
-    if backfill_task is not None:
-        backfill_task.cancel()
-        try:
-            await backfill_task
-        except asyncio.CancelledError:
-            pass
-    retention_task = getattr(app.state, "retention_task", None)
-    if retention_task is not None:
-        retention_task.cancel()
-        try:
-            await retention_task
-        except asyncio.CancelledError:
-            pass
+    # Tidak ada task yang perlu dibatalkan: proses web tidak menjalankan loop.
     # Tutup pool DB (bila dipakai) — in-memory tidak butuh apa-apa.
     close = getattr(app.state.store, "close", None)
     if callable(close):

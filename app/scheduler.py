@@ -1,9 +1,21 @@
-"""Scheduler rolling forecast (Fase 4) — pengisi `latest`/`history` latar belakang.
+"""Scheduler rolling forecast — pengisi `latest`/`history` latar belakang.
 
 Kontrak §5.1: `POST /forecast` **tidak menyimpan** hasil; "penyimpanan terjadi
-di scheduler latar belakang". Modul itulah scheduler itu — sebelumnya hanya
-disebut di kontrak, belum pernah diimplementasikan (dampak: `GET /forecast/latest`
-selalu 404 `E_NO_FORECAST`).
+di scheduler latar belakang". Modul itulah scheduler itu (dampak tanpanya:
+`GET /forecast/latest` selalu 404 `E_NO_FORECAST`).
+
+KEPUTUSAN PENJADWALAN (lihat README "Keputusan interval"):
+**loop tak berujung TIDAK dijalankan di dalam proses web.** Regenerasi per jam
+dijadwalkan oleh mekanisme server eksternal (GitHub Actions — gratis untuk repo
+public; lihat `.github/workflows/forecast-jobs.yml`) yang memanggil
+`POST /internal/v1/jobs/forecast` atau wrapper `scripts/run_forecast.sh`.
+Alasan: loop di dalam proses web mati saat instance restart dan tidak terlihat
+di log deploy. Yang TETAP di sini:
+
+- **Warm tick sekali saat startup** (sinkron, bukan loop) — `SCHEDULER_ENABLED`
+  mengendalikan ini; supaya `GET /forecast/latest` langsung 200 setelah deploy.
+- **Satu rantai fungsi** untuk semua jalur (kontrak §8): warm tick, endpoint
+  job, dan cron semuanya lewat `run_site_forecast` → `service.run_forecast`.
 
 Desain:
 
@@ -18,14 +30,13 @@ Desain:
   ``HISTORY_ROWS`` baris terakhir yang tersedia — bukan "60 hari terakhir dari
   hari ini", karena dataset berhenti pada tanggal tertentu dan jendela
   "hari ini mundur 60 hari" bisa kosong padahal data cukup.
-- **Kegagalan per-tick tidak mematikan loop**: satu site gagal (CSV hilang,
-  model rusak) dicatat dan site berikutnya tetap diproses.
+- **Kegagalan per-site tidak mematikan tick**: satu site gagal (CSV hilang,
+  model rusak) dicatat (termasuk ke ``forecast_run``) dan site berikutnya tetap
+  diproses.
 
-Lingkup: single-process (satu worker uvicorn, seperti `render.yaml`).
-Bila service di-scale > 1 worker/replica, setiap proses menjalankan scheduler
-sendiri — forecast identik (deterministik), tapi pemborosan CPU; solusi jangka
-panjang: pindah ke antrean terpusat atau matikan scheduler di proses non-utama
-(`SCHEDULER_ENABLED=false`).
+Lingkup: tanpa proses scheduler di dalam aplikasi, skala multi-worker/replica
+tidak lagi menggandakan regenerasi — pekerjaan berulang hidup di scheduler
+eksternal sekali saja.
 """
 
 from __future__ import annotations
@@ -34,7 +45,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, Mapping, Sequence
+from typing import Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from app import service
@@ -47,17 +58,14 @@ log = logging.getLogger("app.scheduler")
 
 SITE_TZ = ZoneInfo(DEFAULT_TIMEZONE)
 
-#: Regenerasi per jam — konsisten kontrak §1.4 (Cache-Control max-age=60,
-#: "diregenerasi minimal per jam") dan SLA §5.2 "90 menit". Gate §10.5
-#: (interval) sudah diputuskan di sini; retensi history masih terbuka.
-DEFAULT_INTERVAL_SECONDS = 3600.0
-
 #: Baris history yang dipakai scheduler. Artefak mensyaratkan >= 30
 #: (``history_min_rows``); 60 memberi cadangan dan tetap murah (ARIMA harian).
 DEFAULT_HISTORY_ROWS = 60
 
-#: Horizon bawaan scheduler — sama dengan horizon utama evaluasi (§10.5).
-DEFAULT_HORIZON = 7
+#: Horizon bawaan scheduler/cron — satu nilai untuk warm tick + job eksternal.
+#: 24 hari mengikuti endpoint job dan keputusan operasional README. Berbeda
+#: dengan horizon primary evaluasi (7): itu metrik, bukan jendela forecast.
+DEFAULT_HORIZON = 24
 
 #: Jendela muat yang sengaja lebar: tujuannya mengambil *tail* dataset,
 #: bukan "rentang hari ini". CSV saat ini berhenti 2025-12-31 sementara
@@ -68,27 +76,13 @@ _HISTORY_LOOKBACK = timedelta(days=365 * 10)
 def enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
     """Baca `SCHEDULER_ENABLED` (default: aktif).
 
-    Matikan dengan `SCHEDULER_ENABLED=false` — dipakai test dan proses
-    worker sekunder (lihat modul docstring).
+    `true` = jalankan warm tick sekali saat startup (tanpa loop); `false` = web
+    tanpa kerja forecast sama sekali (dipakai test dan worker sekunder).
+    Interval regenerasi tidak lagi milik env — dijadwalkan scheduler eksternal
+    (GitHub Actions; lihat README "Keputusan interval").
     """
     raw = (env if env is not None else os.environ).get("SCHEDULER_ENABLED", "true")
     return raw.strip().lower() not in {"0", "false", "no", "off"}
-
-
-def interval_from_env(env: Mapping[str, str] | None = None) -> float:
-    """Baca `SCHEDULER_INTERVAL_SECONDS` (default 3600; minimum 1 detik)."""
-    raw = (env if env is not None else os.environ).get(
-        "SCHEDULER_INTERVAL_SECONDS", ""
-    ).strip()
-    if not raw:
-        return DEFAULT_INTERVAL_SECONDS
-    try:
-        value = float(raw)
-    except ValueError:
-        log.warning("SCHEDULER_INTERVAL_SECONDS=%r tidak valid; memakai default %ss",
-                    raw, DEFAULT_INTERVAL_SECONDS)
-        return DEFAULT_INTERVAL_SECONDS
-    return max(value, 1.0)
 
 
 def fetch_history(
@@ -190,11 +184,47 @@ def run_site_forecast(
     horizon: int = DEFAULT_HORIZON,
     now: datetime | None = None,
 ) -> StoredForecast:
-    """Ambil tail actuals site → forecast → simpan. Satu tick untuk satu site."""
-    history = fetch_history(site_id, rows=rows, now=now)
-    return run_and_store_forecast(
-        store, site_id=site_id, history=history, horizon=horizon, generated_at=now
+    """Ambil tail actuals site → forecast → simpan. Satu run untuk satu site.
+
+    6·03 / 7·04 — jejak run: bila store mengimplementasikan ``record_run``
+    (penyedia DB), SETIAP run ditulis ke ``forecast_run`` — sukses
+    (forecast_id, generated_at, rows_saved) ATAU gagal (error). Pencatatan ada
+    DI SINI (bukan di pemanggil): endpoint job, warm tick, dan cron eksternal
+    semuanya melewati fungsi ini, sehingga run luar punya jejak yang sama;
+    tanpa itu kegagalan run eksternal hanya hidup di log runner CI dan hilang
+    saat restart. Pencatatan tidak boleh menjatuhkan run (defensif ganda:
+    implementasi DB sudah menangkapnya).
+    """
+    started = now or datetime.now(tz=SITE_TZ)
+    try:
+        history = fetch_history(site_id, rows=rows, now=now)
+        item = run_and_store_forecast(
+            store, site_id=site_id, history=history, horizon=horizon, generated_at=now
+        )
+    except asyncio.CancelledError:  # pragma: no cover - shutdown path
+        raise
+    except Exception as exc:
+        _record_run(
+            store,
+            site_id=site_id,
+            started_at=started,
+            finished_at=datetime.now(tz=SITE_TZ),
+            status="failed",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        raise
+    _record_run(
+        store,
+        site_id=site_id,
+        started_at=started,
+        finished_at=datetime.now(tz=SITE_TZ),
+        status="ok",
+        rows_saved=len(item.forecast),
+        forecast_id=item.forecast_id,
+        generated_at=item.generated_at,
+        model_version=item.model_version,
     )
+    return item
 
 
 def tick(
@@ -206,44 +236,19 @@ def tick(
     """Proses semua site sekali. Kegagalan per-site dicatat, tidak dibuang.
 
     Mengembalikan ``forecast_id`` yang berhasil disimpan (untuk log/uji).
-
-    6·03 / 7·04 — jejak run: bila store mengimplementasikan
-    ``record_run`` (penyedia DB), SETIAP run ditulis ke ``forecast_run``:
-    sukses (forecast_id, generated_at, rows_saved) ATAU gagal (error).
-    Tanpa itu kegagalan hanya hidup di log proses — hilang saat restart,
-    dan "run gagal diam-diam" tak terdeteksi. Penyedia in-memory tanpa
-    ``record_run`` dibiarkan tanpa catatan (PoC).
+    Jejak run ke ``forecast_run`` dilakukan di dalam
+    :func:`run_site_forecast` — lihat catatan di sana.
     """
     saved: list[str] = []
     for site_id in sites:
-        started = now or datetime.now(tz=SITE_TZ)
         try:
             item = run_site_forecast(store, site_id, now=now)
         except asyncio.CancelledError:  # pragma: no cover - shutdown path
             raise
-        except Exception as exc:
+        except Exception:
             log.exception("scheduler tick gagal untuk site=%s — lanjut ke site berikut", site_id)
-            _record_run(
-                store,
-                site_id=site_id,
-                started_at=started,
-                finished_at=datetime.now(tz=SITE_TZ),
-                status="failed",
-                error=f"{type(exc).__name__}: {exc}",
-            )
             continue
         saved.append(item.forecast_id)
-        _record_run(
-            store,
-            site_id=site_id,
-            started_at=started,
-            finished_at=datetime.now(tz=SITE_TZ),
-            status="ok",
-            rows_saved=len(item.forecast),
-            forecast_id=item.forecast_id,
-            generated_at=item.generated_at,
-            model_version=item.model_version,
-        )
         log.info(
             "scheduler menyimpan forecast site=%s id=%s horizon=%s generated_at=%s",
             item.site_id, item.forecast_id, item.horizon,
@@ -255,40 +260,10 @@ def tick(
 def _record_run(store: ForecastStore, **kwargs) -> None:
     """Catat run bila store mendukungnya (``record_run``); tanpa efek samping
     untuk penyedia in-memory. Kegagalan PENCATATAN tidak boleh menjatuhkan
-    tick — sudah ditangani di dalam implementasi DB."""
+    run — sudah ditangani di dalam implementasi DB dan di sini defensif."""
     recorder = getattr(store, "record_run", None)
     if callable(recorder):
         try:
             recorder(**kwargs)
         except Exception:  # pragma: no cover - defensif ganda
             log.exception("run log gagal dicatat untuk site=%s", kwargs.get("site_id"))
-
-
-async def scheduler_loop(
-    store: ForecastStore,
-    sites: Sequence[str],
-    *,
-    interval: float = DEFAULT_INTERVAL_SECONDS,
-    immediate: bool = True,
-    run_tick: Callable[..., list[str]] | None = None,
-    sleep: Callable[[float], Awaitable[None]] | None = None,
-) -> None:
-    """Loop tak berujing: tick → tidur interval → tick → ...
-
-    ``immediate=True`` (default) menjalankan tick SEBELUM tidur pertama —
-    dipakai saat test/loop mandiri. Lifespan memakai ``immediate=False``
-    karena ia sudah menunggu tick pertama sendiri saat startup (lihat
-    ``app/main.py``) — tanpa itu boot menghasilkan dua fit ARIMA dan dua
-    entri history.
-
-    ``run_tick`` / ``sleep`` bisa disuntikkan saat test (deterministik,
-    tanpa tidur sungguhan). Pembatalan task (shutdown lifespan) menghentikan
-    loop.
-    """
-    do_tick = run_tick or tick
-    do_sleep = sleep or asyncio.sleep
-    if immediate:
-        await asyncio.to_thread(do_tick, store, sites)
-    while True:
-        await do_sleep(interval)
-        await asyncio.to_thread(do_tick, store, sites)
