@@ -220,7 +220,9 @@ def test_latest_after_storage_roundtrip(client, auth_headers):
     store = InMemoryForecastStore()
     store.save(
         items_from_response(
-            forecast_id="fixed-id-0000",
+            # §3.2: forecast_id = UUID — string sembarangan ditolak
+            # penyedia DB (kolom uuid), sama seperti test_error_handling.
+            forecast_id="00000000-0000-4000-8000-000000000001",
             site_id=resp.site_id,
             target=resp.target,
             resolution=resp.resolution,
@@ -235,7 +237,7 @@ def test_latest_after_storage_roundtrip(client, auth_headers):
     r = client.get("/api/v1/forecast/latest", params={"site_id": "PLTS_KUPANG"},
                    headers=auth_headers)
     assert r.status_code == 200
-    assert r.json()["forecast_id"] == "fixed-id-0000"
+    assert r.json()["forecast_id"] == "00000000-0000-4000-8000-000000000001"
     assert len(r.json()["forecast"]) == 7
 
 
@@ -261,7 +263,9 @@ def _seed_store(store, n: int = 25) -> None:
         )
         store.save(
             items_from_response(
-                forecast_id=f"id-{i:03d}",
+                # §3.2: forecast_id = UUID — kolom DB bertipe uuid menolak
+                # "id-000". Deterministik per i (dedupe paginasi tetap jalan).
+                forecast_id=f"00000000-0000-4000-8000-{i:012d}",
                 site_id="PLTS_KUPANG",
                 target="irradiance",
                 resolution="daily",
