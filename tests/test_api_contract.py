@@ -466,3 +466,74 @@ def test_rate_limit_kicks_in(client, auth_headers):
             assert r.json()["error"]["code"] == "E_RATE_LIMITED"
             break
     assert 429 in status_codes, "rate limit tidak aktif setelah 60 request"
+
+
+# ===========================================================================
+# Kedaluwarsa key (§1.1) — menutup celah "tidak pernah dicabut"
+# ===========================================================================
+def test_expired_api_key_rejected_403_without_restart(client):
+    """Key lewat tanggal mati DI REQUEST — tanpa mengubah env / restart."""
+    from datetime import date
+
+    from app.security import get_registry
+
+    registry = get_registry()
+    expired_key = "expired-test-key-0123456789abcdef"
+    future_key = "future-test-key-0123456789abcdef"
+    registry.add(expired_key, "engineer", durable=False, expires=date(2020, 1, 1))
+    registry.add(future_key, "engineer", durable=False, expires=date(2099, 1, 1))
+
+    r = client.get("/api/v1/model/info", headers={"X-API-Key": expired_key})
+    assert r.status_code == 403, r.text[:200]
+    err = r.json()["error"]
+    assert err["code"] == "E_FORBIDDEN"
+    assert "expired" in err["message"].lower()
+    assert "2020-01-01" in err["message"], "pesan harus menyebut tanggal mati"
+    # Key ber-TTL masih berlaku — yang mati hanya yang lewat tanggal.
+    ok = client.get("/api/v1/model/info", headers={"X-API-Key": future_key})
+    assert ok.status_code == 200, ok.text[:200]
+
+
+# ===========================================================================
+# Guard: SEMUA endpoint data wajib key (hanya /health yang terbuka)
+# ===========================================================================
+def test_every_data_endpoint_requires_api_key(client):
+    """Sweep OpenAPI + endpoint internal: tanpa X-API-Key -> 401.
+
+    Menjaga aturan §1.1 tetap berlaku untuk endpoint BARU: developer yang
+    menambah route lupa ``Depends(require_api_key)`` → test ini merah di CI,
+    bukan menemukannya saat audit keamanan.
+    """
+    spec = client.get("/openapi.json").json()
+    cases: list[tuple[str, str]] = []
+    for path, methods in spec["paths"].items():
+        if path == "/api/v1/health":
+            continue  # satu-satunya endpoint terbuka (§5.6)
+        for method in methods:
+            if method in ("get", "post"):
+                cases.append((method, path))
+    # Endpoint internal sengaja include_in_schema=False — tetap wajib key.
+    cases.append(("post", "/internal/v1/jobs/forecast"))
+
+    failures: list[str] = []
+    for method, path in cases:
+        if method == "post":
+            payload = _body() if path == "/api/v1/forecast" else {"site_id": "PLTS_KUPANG"}
+            r = client.post(path, json=payload)
+        else:
+            r = client.get(path)
+        try:
+            body = r.json()
+        except ValueError:
+            body = {}
+        if r.status_code != 401 or body.get("error", {}).get("code") != "E_UNAUTHORIZED":
+            failures.append(
+                f"{method.upper()} {path} -> {r.status_code} "
+                f"{body.get('error', {}).get('code')}"
+            )
+    assert not failures, (
+        "endpoint data tanpa auth (diharapkan 401 E_UNAUTHORIZED): "
+        + "; ".join(failures)
+    )
+    # Sehat: /health TETAP terbuka tanpa key — jangan di-sweep.
+    assert client.get("/api/v1/health").status_code == 200

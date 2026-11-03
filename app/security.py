@@ -13,6 +13,7 @@ import secrets
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Callable
 
 from fastapi import Depends, Request, Response
@@ -118,12 +119,23 @@ class ApiKeyRegistry:
     """
 
     keys: dict[str, str] = field(default_factory=dict)  # key -> label konsumen
+    #: key -> tanggal kedaluwarsa (``None`` = permanen, format §1.1 opsional).
+    #: Dievaluasi per request — key mati pada tanggalnya TANPA restart.
+    expires: dict[str, date] = field(default_factory=dict)
     durable: bool = False
 
-    def add(self, key: str, label: str, *, durable: bool = True) -> None:
+    def add(
+        self,
+        key: str,
+        label: str,
+        *,
+        durable: bool = True,
+        expires: date | None = None,
+    ) -> None:
         if len(key) < 16:
             raise ValueError("API key minimal 16 karakter")
         self.keys[key] = label
+        self.expires[key] = expires
         self.durable = self.durable or durable
 
     @staticmethod
@@ -139,27 +151,46 @@ CONSUMER_LABEL_PATTERN = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 #: Label untuk entri `API_KEYS` tanpa prefix label (format lama).
 LEGACY_LABEL = "legacy"
 
+#: Tanggal kedaluwarsa key: TEPAT `YYYY-MM-DD` (regex dulu — ``date.fromisoformat``
+#: menerima juga format padat ``YYYYMMDD`` di Python ≥3.11; format padat
+#: ditolak supaya satu-satunya bentuk yang sah adalah yang didokumentasikan.
+KEY_EXPIRY_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
-def parse_api_keys(raw: str) -> dict[str, str]:
-    """Parse env ``API_KEYS`` → ``{key: label}`` per konsumen.
 
-    Format per entri (dipisah koma, tanpa spasi):
+def _iter_api_key_entries(raw: str):
+    """Yield ``(label, key, expiry)`` per entri ``API_KEYS``.
 
-        label:key          # satu konsumen — label = identitas pemakaian
-        key                # entri lama tanpa label -> label ``legacy``
+    Ekstensi format §1.1 (kompatibel mundur — suffix opsional)::
 
-    ``:`` aman sebagai pemisah: alphabet ``secrets.token_urlsafe`` adalah
-    ``[A-Za-z0-9_-]`` — token tidak pernah memuat titik dua, jadi split
-    pertama pada ``:`` memisahkan label dari key tanpa ambigu.
+        label:key@YYYY-MM-DD     # key berkedaluwarsa
+        key@YYYY-MM-DD           # polos + expiry -> label ``legacy``
+        label:key                # lama: permanen (tetap sah)
 
-    Raise ``ValueError`` pada label/key tidak sah — dipanggil saat startup
-    sehingga konfigurasi salah GAGAL SEJAK AWAL, bukan diam-diam membatalkan
-    konsumen (pola sama dengan penolakan key <16 karakter).
+    ``@`` aman sebagai pemisah expiry: alphabet ``secrets.token_urlsafe``
+    tidak memuat ``@`` dan label dilarang memuatnya (pola konsumen), jadi
+    partition pertama tidak pernah memotong bagian sah dari key.
+
+    Expiry bertujuan menutup celah paling umum pada service sejenis:
+    **key yang tidak pernah dicabut setelah satu orang pindah tugas**.
+    Lewat tanggal (tanggal server) key mati sendiri di request berikutnya —
+    tanpa menunggu restart. Tanggal salah format → ``ValueError`` saat
+    startup (gagal jelas, bukan key yang diam-diam permanen).
+
+    Raise ``ValueError`` pada label/key/expiry tidak sah (lihat
+    :func:`parse_api_keys`).
     """
-    parsed: dict[str, str] = {}
     for entry in filter(None, (e.strip() for e in raw.split(","))):
-        if ":" in entry:
-            label, key = entry.split(":", 1)
+        body, at_sign, expiry_raw = entry.partition("@")
+        expiry = None
+        if at_sign:
+            if not KEY_EXPIRY_PATTERN.match(expiry_raw):
+                raise ValueError(
+                    f"kedaluwarsa key tidak sah: {expiry_raw!r} — format "
+                    "wajib YYYY-MM-DD (mis. 'monitoring:KUNCI@2027-04-01')"
+                )
+            expiry = date.fromisoformat(expiry_raw)
+        if ":" in body:
+            label, key = body.split(":", 1)
             label = label.strip()
             key = key.strip()
             if not CONSUMER_LABEL_PATTERN.match(label):
@@ -168,13 +199,31 @@ def parse_api_keys(raw: str) -> dict[str, str]:
                     f"{CONSUMER_LABEL_PATTERN.pattern} (mis. 'monitoring:KUNCI')"
                 )
         else:
-            label, key = LEGACY_LABEL, entry
+            label, key = LEGACY_LABEL, body
         if len(key) < 16:
             raise ValueError(
                 f"API key '{label}' minimal 16 karakter (dapat {len(key)})"
             )
-        parsed[key] = label
-    return parsed
+        yield label, key, expiry
+
+
+def parse_api_keys_full(raw: str) -> dict[str, tuple[str, date | None]]:
+    """Parse ``API_KEYS`` → ``{key: (label, expiry)}`` — dipakai startup.
+
+    Raise ``ValueError`` pada entri tidak sah — dipanggil saat startup
+    sehingga konfigurasi salah GAGAL SEJAK AWAL, bukan diam-diam membatalkan
+    konsumen (pola sama dengan penolakan key <16 karakter).
+    """
+    return {key: (label, expiry) for label, key, expiry in _iter_api_key_entries(raw)}
+
+
+def parse_api_keys(raw: str) -> dict[str, str]:
+    """Parse env ``API_KEYS`` → ``{key: label}`` per konsumen.
+
+    Wrapper kompatibel atas :func:`parse_api_keys_full` (expiry tidak
+    memengaruhi label). Lihat format di ``_iter_api_key_entries``.
+    """
+    return {key: label for label, key, _expiry in _iter_api_key_entries(raw)}
 
 
 @dataclass
@@ -277,6 +326,18 @@ def require_api_key(
     label = registry.keys.get(x_api_key)
     if label is None:
         raise FastApiError("E_FORBIDDEN", "invalid or revoked API key")
+
+    # Kedaluwarsa (§1.1) — SEBELUM rate limit: key mati tidak boleh menguras
+    # kuota, dan keputusan diambil per request (lewat tanggal = mati sendiri,
+    # tanpa menunggu restart — menutup celah "tidak pernah dicabut").
+    expiry = registry.expires.get(x_api_key)
+    if expiry is not None and date.today() > expiry:
+        raise FastApiError(
+            "E_FORBIDDEN",
+            f"API key expired on {expiry.isoformat()} — rotate the key "
+            "per kontrak §1.1 (label sama, key baru)",
+            status=403,
+        )
 
     # Disetel SEBELUM cek rate limit: baris 429 pun harus tercatat sebagai
     # pemakaian konsumen ini (middleware membaca label ini).

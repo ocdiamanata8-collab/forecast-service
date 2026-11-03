@@ -55,6 +55,7 @@ def restore_api_keys_state():
 
     saved_env = _os.environ.get("API_KEYS")
     saved_keys = dict(get_registry().keys)
+    saved_expires = dict(get_registry().expires)
     yield
     if saved_env is None:
         _os.environ.pop("API_KEYS", None)
@@ -63,6 +64,10 @@ def restore_api_keys_state():
     registry = get_registry()
     registry.keys.clear()
     registry.keys.update(saved_keys)
+    # Expiry ikut dipulihkan: test yang menambah key ber-TTL (§1.1) tidak boleh
+    # membekukan tanggal kedaluwarsa asing ke test berikutnya.
+    registry.expires.clear()
+    registry.expires.update(saved_expires)
 
 
 @pytest.fixture(autouse=True)

@@ -119,6 +119,18 @@ Salin template lalu isi nilainya (label huruf kecil, tanpa spasi):
 Pencabutan per konsumen: hapus entri `<label>:<key>` dari `API_KEYS` →
 restart → key itu `403 E_FORBIDDEN`, konsumen lain tetap jalan.
 
+**Kedaluwarsa (anti-lupa)** — entri diakhiri `@YYYY-MM-DD`:
+
+    API_KEYS=monitoring:<kunci>@2027-04-01,ci:<kunci>@2027-04-01
+
+Lewat tanggal (tanggal server) key ditolak `403` **tanpa restart** —
+menutup celah paling umum: key yang tidak pernah dicabut setelah satu
+orang pindah tugas. Tanggal salah format → gagal startup; key tanpa
+tanggal tetap sah (kompatibilitas) tapi permanen — startup memperingati
+key yang mati ≤30 hari dan key permanen. Aturan operasional: **setiap key
+konsumen baru wajib memakai expiry.** Verifikasi tetap per-request, jadi
+`registry.pop(key)` juga langsung mencabut dalam proses (dipakai test).
+
 ### Contoh memanggil
 
     curl -X POST http://localhost:8000/api/v1/forecast ^

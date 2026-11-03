@@ -22,6 +22,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -48,7 +49,7 @@ from app.security import (
     configure_on_demand_limiter,
     error_response,
     get_registry,
-    parse_api_keys,
+    parse_api_keys_full,
     request_id_of,
 )
 from app.storage import ForecastStore, InMemoryForecastStore
@@ -153,17 +154,45 @@ async def lifespan(app: FastAPI):
     # = gagal startup (jelas sejak awal, bukan diam-diam membatalkan konsumen).
     # ------------------------------------------------------------------
     registry = get_registry()
-    parsed_keys = parse_api_keys(os.environ.get("API_KEYS", ""))
-    for key, label in parsed_keys.items():
+    parsed_keys = parse_api_keys_full(os.environ.get("API_KEYS", ""))
+    for key, (label, expires) in parsed_keys.items():
         if key not in registry.keys:
-            registry.add(key, label, durable=True)
+            registry.add(key, label, durable=True, expires=expires)
     # Visibilitas startup untuk operator: konsumen apa saja yang aktif.
     # HANYA label & jumlah — nilai key tidak pernah dicatat.
     log.info(
         "api key aktif: %d entri, konsumen=%s",
         len(registry.keys),
-        ",".join(sorted(set(registry.keys.values()))) or "-",
+        ",".join(sorted(set(label for label, _ in parsed_keys.values()))) or "-",
     )
+    # Kedaluwarsa (§1.1): peringatan EXPLICIT untuk key yang hampir mati dan
+    # key permanen (tanpa tanggal) — key permanen = celah "tidak pernah
+    # dicabut setelah orang pindah tugas". HANYA label yang dicatat.
+    today = date.today()
+    soon = today + timedelta(days=30)
+    expiring_soon = sorted(
+        label
+        for label, expiry in parsed_keys.values()
+        if expiry is not None and today <= expiry <= soon
+    )
+    if expiring_soon:
+        log.warning(
+            "api key kedaluwarsa <=30 hari: %s — rotasi sebelum tanggalnya "
+            "(kontrak §1.1)",
+            ",".join(expiring_soon),
+        )
+    permanent = sorted({
+        label
+        for label, expiry in parsed_keys.values()
+        if expiry is None
+    })
+    if permanent:
+        log.warning(
+            "api key TANPA tanggal kedaluwarsa (permanen): %s — disarankan "
+            "memakai format label:key@YYYY-MM-DD agar key mati sendiri bila "
+            "lupa dicabut",
+            ",".join(permanent),
+        )
     configure_on_demand_limiter()
 
     # Daftar site yang dikenal layanan (kontrak §6.1 → 404 E_SITE_UNKNOWN

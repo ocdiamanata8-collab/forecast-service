@@ -23,12 +23,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # menjalankan ARIMA fit (state test = store kosong).
 os.environ.setdefault("SCHEDULER_ENABLED", "false")
 
+import pytest  # noqa: E402
+
 from app.main import create_app  # noqa: E402
 from app.security import get_registry, get_limiter  # noqa: E402
 from app.version import model_version  # noqa: E402
 
 FAILURES: list[str] = []
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture(autouse=True)
+def _flush_env_key_checks():
+    """check() mengumpulkan ke FAILURES — pytest harus gagal bila ada FAIL."""
+    FAILURES.clear()
+    yield
+    if FAILURES:
+        msg = "\n".join(FAILURES)
+        FAILURES.clear()
+        pytest.fail(msg)
 # Kunci contoh panjang (>16) untuk menguji format multi-key.
 # Kunci pendek seperti "abc123xyz" ditolak oleh ApiKeyRegistry (min 16 karakter).
 KEY_A = "a1b2c3d4e5f6g7h8i9j0"
@@ -267,7 +280,54 @@ def test_env_example_documents_omissions():
           ".env.example punya SITE_IDS")
 
 
+def test_api_key_expiry_parsing():
+    """Suffix @YYYY-MM-DD (§1.1) — label/key tak berubah, expiry terbaca.
+
+    Ini penutup celah "key tidak pernah dicabut setelah orang pindah tugas":
+    key mati sendiri pada tanggalnya tanpa restart.
+    """
+    from datetime import date as _date
+
+    from app.security import parse_api_keys, parse_api_keys_full
+
+    raw = f"monitoring:{KEY_A}@2027-04-01,{KEY_B}"
+    parsed = parse_api_keys(raw)
+    # Kompatibilitas mundur: expiry TIDAK mengubah bentuk {key: label}.
+    assert parsed == {KEY_A: "monitoring", KEY_B: "legacy"}, parsed
+
+    full = parse_api_keys_full(raw)
+    assert full[KEY_A] == ("monitoring", _date(2027, 4, 1)), full[KEY_A]
+    assert full[KEY_B][1] is None, "key tanpa suffix harus permanen (None)"
+    # Key polos + expiry (tanpa label) juga sah.
+    bare = parse_api_keys_full(f"{KEY_B}@2030-12-31")
+    assert bare[KEY_B] == ("legacy", _date(2030, 12, 31)), bare[KEY_B]
+
+
+def test_invalid_key_expiry_rejected_at_startup():
+    """Tanggal kedaluwarsa salah format = ValueError SEJAK AWAL.
+
+    Bukan diam-diam membuang expiry (key jadi permanen tanpa disadari).
+    """
+    from app.security import parse_api_keys
+
+    bad_cases = [
+        (f"monitoring:{KEY_A}@2027-4-1", "bulan tanpa padding ditolak"),
+        (f"monitoring:{KEY_A}@01-04-2027", "format DD-MM-YYYY ditolak"),
+        (f"monitoring:{KEY_A}@soon", "bukan tanggal ditolak"),
+        (f"monitoring:{KEY_A}@", "tanggal kosong ditolak"),
+        (f"monitoring:{KEY_A}@20270401", "format padat YYYYMMDD ditolak"),
+    ]
+    for raw, why in bad_cases:
+        try:
+            parse_api_keys(raw)
+        except ValueError as exc:
+            check(True, f"{why}: {exc}")
+            continue
+        raise AssertionError(f"{why} — parse_api_keys tidak melempar ValueError")
+
+
 def main() -> int:
+    FAILURES.clear()
     print("\n[1] Format multi-key")
     test_multi_key_format()
     print("\n[1b] Format label:key per konsumen (§1.1)")
@@ -290,6 +350,10 @@ def main() -> int:
     test_tz_env_ignored_and_zone_is_makassar()
     print("\n[8] .env.example menjelaskan omisi")
     test_env_example_documents_omissions()
+    print("\n[9] Expiry key @YYYY-MM-DD (§1.1)")
+    test_api_key_expiry_parsing()
+    print("\n[10] Expiry salah format ditolak saat startup")
+    test_invalid_key_expiry_rejected_at_startup()
 
     print("\n" + "=" * 64)
     if FAILURES:

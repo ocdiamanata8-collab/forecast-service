@@ -25,6 +25,9 @@ curl https://ocdi.blitz.cloud/api/v1/forecast/latest?site_id=PLTS_KUPANG \
 
 - Key salah / tidak ada / sudah dicabut → **403** (atau 401 bila header hilang). Simpan key
   di **secret manager** — bukan source code, URL, HTML, atau chat.
+- **Kedaluwarsa**: server menerima entri `label:key@YYYY-MM-DD`; lewat tanggal
+  → `403` (pesan menyebut tanggalnya, format sama dengan key salah/dicabut).
+  Setelah rotasi, key lama yang sudah lewat mati sendiri tanpa restart.
 - Setiap konsumen punya key sendiri, jadi pemakaian & pencabutan per konsumen.
 
 ---
@@ -101,6 +104,31 @@ m.generatedAt   // umur data → deteksi basi
 
 **Ini satu-satunya tempat membaca nama field kontrak.** Kalau kontrak berubah,
 hanya berkas itu yang disentuh — UI Anda tidak ikut rusak.
+
+### 3.4 Ingesta server-side (Fase B — `monitoring-ingest.js`)
+
+Modul referensi [`static/monitoring-ingest.js`](static/monitoring-ingest.js)
+(mirror live: `GET /static/monitoring-ingest.js`) mengambil **health + latest +
+history (limit 50) + performance** lalu menerjemahkan lewat adapter. Cache per
+site dengan TTL 5–15 menit dan revalidate background.
+
+```js
+import {
+  ingestMonitoringSite,
+  MonitoringSiteCache,
+  DEFAULT_CACHE_TTL_MS,
+} from "https://ocdi.blitz.cloud/static/monitoring-ingest.js";
+
+const cache = new MonitoringSiteCache({ ttlMs: DEFAULT_CACHE_TTL_MS });
+const { bundle, fromCache, stale } = await cache.load("PLTS_KUPANG", {
+  baseUrl: "https://ocdi.blitz.cloud",
+  apiKey: process.env.FORECAST_API_KEY, // dari secret manager — jangan hardcode
+});
+
+// Layer tampilan hanya baca bundle — bukan field kontrak mentah:
+const line = bundle.latest.forecast?.points.filter((p) => p.inHorizon);
+const label = `${bundle.modelVersion} · ${bundle.generatedAt}`;
+```
 
 ---
 
