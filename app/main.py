@@ -45,6 +45,7 @@ from app.scheduler import (
 )
 from app.security import (
     FastApiError,
+    configure_on_demand_limiter,
     error_response,
     get_registry,
     parse_api_keys,
@@ -163,6 +164,7 @@ async def lifespan(app: FastAPI):
         len(registry.keys),
         ",".join(sorted(set(registry.keys.values()))) or "-",
     )
+    configure_on_demand_limiter()
 
     # Daftar site yang dikenal layanan (kontrak §6.1 → 404 E_SITE_UNKNOWN
     # untuk latest/history/performance). Tanpa registry ini, site_id yang

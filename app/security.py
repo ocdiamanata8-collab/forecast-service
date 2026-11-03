@@ -205,6 +205,10 @@ class RateLimiter:
 
 _REGISTRY = ApiKeyRegistry()
 _LIMITER = RateLimiter()
+#: Kuota terpisah untuk POST on-demand (§5.1) — jauh lebih ketat dari §1.3
+#: agar sistem lain tidak bisa mem-polling engine ARIMA; operasional pakai
+#: GET /forecast/latest (§5.2).
+_ON_DEMAND_LIMITER = RateLimiter(limit=6, window_seconds=60)
 
 
 def get_registry() -> ApiKeyRegistry:
@@ -214,6 +218,35 @@ def get_registry() -> ApiKeyRegistry:
 
 def get_limiter() -> RateLimiter:
     return _LIMITER
+
+
+def get_on_demand_limiter() -> RateLimiter:
+    return _ON_DEMAND_LIMITER
+
+
+def configure_on_demand_limiter() -> None:
+    """Terapkan env ``ON_DEMAND_FORECAST_RATE_*`` sekali saat startup."""
+    import os
+
+    lim = get_on_demand_limiter()
+    lim.limit = max(1, int(os.environ.get("ON_DEMAND_FORECAST_RATE_LIMIT", "6")))
+    lim.window_seconds = max(
+        1, int(os.environ.get("ON_DEMAND_FORECAST_RATE_WINDOW", "60"))
+    )
+
+
+def on_demand_blocked_consumer_labels() -> frozenset[str]:
+    """Label konsumen yang dilarang POST /forecast (default: ``monitoring``).
+
+    Env ``FORECAST_ON_DEMAND_BLOCKED_LABELS`` — daftar dipisah koma.
+    Kosong / ``none`` / ``-`` → tidak ada yang diblokir (hanya untuk uji).
+    """
+    import os
+
+    raw = os.environ.get("FORECAST_ON_DEMAND_BLOCKED_LABELS", "monitoring").strip()
+    if not raw or raw.lower() in {"none", "-"}:
+        return frozenset()
+    return frozenset(filter(None, (p.strip() for p in raw.split(","))))
 
 
 def require_api_key(
@@ -267,6 +300,55 @@ def require_api_key(
     response.headers["X-RateLimit-Limit"] = str(get_limiter().limit)
     response.headers["X-RateLimit-Remaining"] = str(remaining)
     return x_api_key
+
+
+def require_on_demand_forecast(
+    request: Request,
+    response: Response,
+    x_api_key: str | None = Depends(api_key_header),
+) -> str:
+    """Gerbang khusus ``POST /api/v1/forecast`` (§5.1).
+
+    Jalur operasional monitoring memakai ``GET /forecast/latest`` (§5.2).
+    Endpoint ini tetap ada untuk uji engineer, dengan:
+
+    - penolakan eksplisit konsumen berlabel (default ``monitoring``) → ``403``;
+    - kuota terpisah ``ON_DEMAND_FORECAST_RATE_*`` (bawaan 6/menit), lebih
+      ketat dari §1.3 agar client lain tidak mem-polling engine ARIMA.
+
+    Autentikasi + rate limit umum §1.3 tetap lewat :func:`require_api_key`.
+    Header ``X-RateLimit-*`` pada respons sukses POST mencerminkan kuota
+    on-demand, bukan 60 req/menit endpoint lain.
+    """
+    key = require_api_key(request, response, x_api_key)
+    label = request.state.api_key_label
+
+    if label in on_demand_blocked_consumer_labels():
+        raise FastApiError(
+            "E_FORBIDDEN",
+            "POST /api/v1/forecast is for engineer testing only; "
+            "use GET /api/v1/forecast/latest for operational polling",
+            status=403,
+        )
+
+    od = get_on_demand_limiter()
+    allowed, remaining, retry_after = od.check(x_api_key)
+    if not allowed:
+        raise FastApiError(
+            "E_RATE_LIMITED",
+            f"on-demand forecast rate limit {od.limit} req/"
+            f"{od.window_seconds}s exceeded; use GET /api/v1/forecast/latest "
+            "instead of polling POST /forecast",
+            headers={
+                "Retry-After": str(retry_after),
+                "X-RateLimit-Limit": str(od.limit),
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(retry_after),
+            },
+        )
+    response.headers["X-RateLimit-Limit"] = str(od.limit)
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
+    return key
 
 
 def require_model_ready(request: Request) -> None:

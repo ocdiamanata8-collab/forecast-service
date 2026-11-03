@@ -75,12 +75,15 @@ def reset_rate_limiter():
     antrean request sebelumnya. Isolasi ini juga membuat test rate limit
     sendiri deterministik.
     """
-    from app.security import get_limiter
+    from app.security import get_limiter, get_on_demand_limiter
 
     limiter = get_limiter()
+    on_demand = get_on_demand_limiter()
     limiter._hits.clear()
+    on_demand._hits.clear()
     yield
     limiter._hits.clear()
+    on_demand._hits.clear()
 
 
 @pytest.fixture(autouse=True)

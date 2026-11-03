@@ -37,6 +37,7 @@ from app.security import (
     assert_known_site,
     require_api_key,
     require_model_ready,
+    require_on_demand_forecast,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["forecast"])
@@ -165,10 +166,15 @@ def post_forecast(
     request: Request,
     payload: ForecastRequest,
     idempotency_key: str | None = None,
-    _: str = Depends(require_api_key),
+    _: str = Depends(require_on_demand_forecast),
     __: None = Depends(require_model_ready),
 ) -> ForecastResponse:
-    """§5.1 — forecast on-demand; deterministik, tidak menyimpan."""
+    """§5.1 — forecast on-demand engineer; deterministik, tidak menyimpan.
+
+    Operasional (monitoring) memakai ``GET /forecast/latest`` (§5.2). Konsumen
+    berlabel ``monitoring`` ditolak di sini; kuota POST terpisah dan lebih
+    ketat dari §1.3 (env ``ON_DEMAND_FORECAST_RATE_*``).
+    """
     # site_id dari body divalidasi sama seperti query: site yang tidak
     # terdaftar adalah salah konfigurasi, jauh lebih baik gagal di sini
     # daripada menghasilkan forecast yang tidak pernah bisa dicocokkan
