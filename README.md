@@ -131,6 +131,36 @@ key yang mati ≤30 hari dan key permanen. Aturan operasional: **setiap key
 konsumen baru wajib memakai expiry.** Verifikasi tetap per-request, jadi
 `registry.pop(key)` juga langsung mencabut dalam proses (dipakai test).
 
+### Dashboard engineer (GET /) — HTTP Basic
+
+Dashboard di `/` memuat data internal (forecast, aktual, evaluasi model) dan
+punya tombol menjalankan job, jadi ia punya **lapisan auth sendiri** yang
+terpisah dari `X-API-Key`:
+
+    DASHBOARD_USER=engineer
+    DASHBOARD_PASSWORD=<hasil token_urlsafe(24)>
+
+Tanpa keduanya, `GET /` membalas **503** (fail-closed — tidak dibuka
+diam-diam). Kredensial salah → `401` + `WWW-Authenticate` sehingga browser
+memunculkan dialog login; percobaan gagal dibatasi per IP+user. Basic Auth
+**wajib** di atas HTTPS, jadi pasang `FORCE_HTTPS=true` di produksi.
+
+Kedua lapisan berdampingan, bukan saling menggantikan: Basic Auth menjaga
+halaman, `X-API-Key` menjaga panggilan API dari JS di dalam halaman.
+
+### CORS & HTTPS (deployment)
+
+Browser dashboard yang dihosting terpisah butuh CORS eksplisit — **jangan**
+`allow_origins=["*"]`, karena CORS lebar + `X-API-Key` di browser membuat
+halaman asing bisa memakai key pengunjung:
+
+    ALLOWED_ORIGINS=https://monitoring.sei.co.id
+    FORCE_HTTPS=true
+
+`ALLOWED_ORIGINS` dipisah koma tanpa spasi; `*` ditolak saat startup.
+`FORCE_HTTPS=true` mengaktifkan redirect HTTP→HTTPS dan mempercayai
+`X-Forwarded-Proto` dari reverse proxy (`TRUSTED_PROXY_HOSTS`).
+
 ### Contoh memanggil
 
     curl -X POST http://localhost:8000/api/v1/forecast ^

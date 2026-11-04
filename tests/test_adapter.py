@@ -18,6 +18,7 @@ C. GUARD dashboard — dashboard benar-benan meng-import adapter (bukan
 
 from __future__ import annotations
 
+import base64
 import os
 import shutil
 import subprocess
@@ -34,6 +35,16 @@ from fastapi.testclient import TestClient  # noqa: E402
 from app.main import create_app  # noqa: E402
 
 ADAPTER_PATH = "static/monitoring-adapter.js"
+
+#: Kredensial dashboard engineer (HTTP Basic) — GET / dilindungi.
+_DASH_USER = os.environ.get("DASHBOARD_USER", "engineer")
+_DASH_PASS = os.environ.get(
+    "DASHBOARD_PASSWORD", "test-dashboard-password-0123456789"
+)
+DASH_AUTH = {
+    "Authorization": "Basic "
+    + base64.b64encode(f"{_DASH_USER}:{_DASH_PASS}".encode("utf-8")).decode("ascii")
+}
 
 
 @pytest.fixture()
@@ -226,7 +237,7 @@ def test_adapter_behavior_via_node(tmp_path):
 # C. Guard dashboard — benar-benar memakai adapter
 # ---------------------------------------------------------------------------
 def test_dashboard_imports_adapter(client):
-    html = client.get("/").text
+    html = client.get("/", headers=DASH_AUTH).text
     assert 'type="module"' in html, "dashboard harus memakai <script type=module>"
     assert ADAPTER_PATH in html, "dashboard harus meng-import adapter"
     assert "toForecast" in html and "toPerformance" in html and "toHealth" in html

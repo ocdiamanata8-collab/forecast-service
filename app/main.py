@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -37,6 +37,10 @@ from app.api import jobs as jobs_api
 from app.api import model as model_api
 from app.artifacts import ArtifactError, load_artifacts
 from app import backfill
+from app.dashboard_auth import (
+    log_dashboard_auth_at_startup,
+    require_dashboard_login,
+)
 from app import retention
 from app.db import DatabaseUnavailable, PostgresForecastStore
 from app.scheduler import (
@@ -52,6 +56,7 @@ from app.security import (
     parse_api_keys_full,
     request_id_of,
 )
+from app.http_policy import configure_http_middleware, log_http_policy_at_startup
 from app.storage import ForecastStore, InMemoryForecastStore
 from app.version import VersionFileError, assert_sane
 
@@ -194,6 +199,8 @@ async def lifespan(app: FastAPI):
             ",".join(permanent),
         )
     configure_on_demand_limiter()
+    log_http_policy_at_startup()
+    log_dashboard_auth_at_startup()
 
     # Daftar site yang dikenal layanan (kontrak §6.1 → 404 E_SITE_UNKNOWN
     # untuk latest/history/performance). Tanpa registry ini, site_id yang
@@ -314,6 +321,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    configure_http_middleware(app)
+
     app.include_router(forecast_api.router)
     app.include_router(jobs_api.router)
     app.include_router(model_api.router)
@@ -343,8 +352,14 @@ def create_app() -> FastAPI:
     # menolak bila nama itu hanya tersedia lokal di dalam fungsi — crash saat
     # startup container. Pydantic 2.13 di laptop kebetulan toleran, jadi masalah
     # ini baru terlihat saat build image. Inilah gunanya menguji container.
+    #
+    # AUTH (PoC): HTTP Basic lewat DASHBOARD_USER/DASHBOARD_PASSWORD. Tanpa
+    # konfigurasi → 503 (deploy belum siap), BUKAN terbuka. Kredensial salah →
+    # 401 + WWW-Authenticate → browser memunculkan dialog login.
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
-    def engineer_dashboard() -> HTMLResponse:
+    def engineer_dashboard(
+        _: str = Depends(require_dashboard_login),
+    ) -> HTMLResponse:
         index = TEMPLATE_DIR / "index.html"
         if not index.exists():
             raise FastApiError(

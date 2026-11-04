@@ -75,10 +75,19 @@ def run_checks(c: TestClient) -> None:
     check("health: service_version + uptime ada",
           "service_version" in b and "uptime_seconds" in b)
 
-    # 2. dashboard — membuktikan templates/ terbawa ke image
-    r = c.get("/")
+    # 2. dashboard — membuktikan templates/ terbawa ke image (Basic Auth)
+    import base64
+    import os
+
+    du = os.environ.get("DASHBOARD_USER", "engineer")
+    dp = os.environ.get("DASHBOARD_PASSWORD", "test-dashboard-password-0123456789")
+    raw = base64.b64encode(f"{du}:{dp}".encode("utf-8")).decode("ascii")
+    dash_h = {"Authorization": "Basic " + raw}
+    r = c.get("/", headers=dash_h)
     check("GET / = 200 dan memuat dashboard",
           r.status_code == 200 and "Engineer Console" in r.text, str(r.status_code))
+    r = c.get("/")
+    check("GET / tanpa kredensial = 401", r.status_code == 401, str(r.status_code))
 
     # 3. docs — FastAPI jalan penuh di dalam isi image
     r = c.get("/docs")

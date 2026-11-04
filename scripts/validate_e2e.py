@@ -39,6 +39,21 @@ if not _env_key:
 KEY = _env_key
 H = {"X-API-Key": KEY}
 
+# Dashboard engineer (GET /) dilindungi HTTP Basic — kredensial diambil dari
+# environment (DASHBOARD_USER/DASHBOARD_PASSWORD). Tanpa itu, skrip tidak bisa
+# memeriksa halaman; luxury: halaman tetap bisa di-skip bila env tak disetel.
+_dash_user = os.environ.get("DASHBOARD_USER", "")
+_dash_pass = os.environ.get("DASHBOARD_PASSWORD", "")
+if _dash_user and _dash_pass:
+    import base64
+
+    DASH_H = {
+        "Authorization": "Basic "
+        + base64.b64encode(f"{_dash_user}:{_dash_pass}".encode("utf-8")).decode("ascii")
+    }
+else:
+    DASH_H = {}
+
 RESULTS: list[tuple[str, bool, str]] = []
 
 
@@ -92,13 +107,19 @@ def main() -> int:
           post_sec == [{"ApiKeyAuth": []}], str(post_sec))
 
     # ------------------------------------------------------------------
-    # 2. GET / (dashboard)
+    # 2. GET / (dashboard) — butuh Basic Auth dashboard
     # ------------------------------------------------------------------
-    r = client.get("/")
-    check("GET / = 200 HTML dashboard", r.status_code == 200 and "text/html" in r.headers["content-type"],
-          f"{r.status_code}")
-    check("dashboard memanggil /api/v1/forecast/latest",
-          "/api/v1/forecast/latest" in r.text)
+    if DASH_H:
+        r = client.get("/", headers=DASH_H)
+        check("GET / = 200 HTML dashboard", r.status_code == 200 and "text/html" in r.headers["content-type"],
+              f"{r.status_code}")
+        check("dashboard memanggil /api/v1/forecast/latest",
+              "/api/v1/forecast/latest" in r.text)
+        r_unauth = client.get("/")
+        check("GET / tanpa kredensial = 401", r_unauth.status_code == 401,
+              f"{r_unauth.status_code}")
+    else:
+        check("GET / dilewati (DASHBOARD_USER/PASSWORD belum disetel)", True)
 
     # ------------------------------------------------------------------
     # 3. GET /api/v1/health — kontrak §5.6

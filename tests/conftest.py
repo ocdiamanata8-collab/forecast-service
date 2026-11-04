@@ -39,6 +39,14 @@ if TEST_DATABASE_URL:
 DEMO_KEY = "dev-key-change-me-0123456789"
 os.environ.setdefault("API_KEYS", DEMO_KEY)
 
+# Kredensial dashboard engineer (HTTP Basic) untuk test. Dipakai fixture
+# ``dashboard_auth`` di bawah. Di produksi keduanya datang dari secret
+# manager (DASHBOARD_USER / DASHBOARD_PASSWORD).
+DASHBOARD_USER = "engineer"
+DASHBOARD_PASSWORD = "test-dashboard-password-0123456789"
+os.environ.setdefault("DASHBOARD_USER", DASHBOARD_USER)
+os.environ.setdefault("DASHBOARD_PASSWORD", DASHBOARD_PASSWORD)
+
 
 @pytest.fixture(autouse=True)
 def restore_api_keys_state():
@@ -110,6 +118,15 @@ def restore_scheduler_env():
 @pytest.fixture()
 def auth_headers() -> dict[str, str]:
     return {"X-API-Key": DEMO_KEY}
+
+
+@pytest.fixture()
+def dashboard_auth() -> dict[str, str]:
+    """Header Basic Auth untuk dashboard engineer (GET /)."""
+    import base64
+
+    raw = f"{DASHBOARD_USER}:{DASHBOARD_PASSWORD}".encode("utf-8")
+    return {"Authorization": "Basic " + base64.b64encode(raw).decode("ascii")}
 
 
 @pytest.fixture()

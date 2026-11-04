@@ -41,6 +41,20 @@ services:
         # WAJIB diisi dari dashboard Render atau via env var — tanpa ini
         # endpoint ber-key membalas 401.
         sync: false
+      - key: DASHBOARD_USER
+        # Dashboard engineer (GET /) dilindungi HTTP Basic. Kosong = GET /
+        # membalas 503 (fail-closed), bukan terbuka.
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        # WAJIB + FORCE_HTTPS=true: Basic Auth tanpa TLS mengirim password
+        # dalam keadaan terbuka.
+        sync: false
+      - key: ALLOWED_ORIGINS
+        # Origin dashboard monitoring yang diizinkan (koma, tanpa spasi).
+        # JANGAN "*" — CORS lebar + X-API-Key browser = celah.
+        sync: false
+      - key: FORCE_HTTPS
+        value: "true"
       - key: DATABASE_URL
         # 6·05 — string koneksi database: isi dari dashboard Render
         # (File Sync / Environment Variables), BUKAN dari repository.

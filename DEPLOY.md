@@ -64,7 +64,30 @@ tanpa menguji ulang (termasuk `tests/test_engine_golden.py` dan
    | `MODEL_VERSION` | Versi hidup di `model/VERSION` — SATU-SATUNYA sumber (diuji `test_version.py`). Menambah env versi kedua hanya menciptakan sumber kebenaran ganda |
    | `TZ` | Zona dikunci `Asia/Makassar` (WITA, UTC+8) di kode. `Asia/Jakarta` (UTC+7) akan menggeser seluruh timestamp 1 jam dan membuat filter 07:00–17:00 salah — persis kekeliruan zona yang sudah diperangi |
 
-4b. **Database (Fase 6 · 6·05) — `DATABASE_URL`**. Isi dari dashboard Render
+4b. **Dashboard engineer (GET /) — `DASHBOARD_USER` + `DASHBOARD_PASSWORD`**.
+   Halaman `/` memuat data internal dan punya tombol menjalankan job, jadi
+   ia dilindungi **HTTP Basic** (PoC sampai ada SSO platform).
+
+   ```
+   DASHBOARD_USER=engineer
+   DASHBOARD_PASSWORD=<token_urlsafe(24)>
+   ```
+
+   - Tanpa keduanya → `GET /` membalas **503** (fail-closed, bukan terbuka).
+   - Kredensial salah → `401` + `WWW-Authenticate` (dialog login browser).
+   - **Pasang `FORCE_HTTPS=true` juga** — Basic Auth tanpa TLS mengirim
+     password dalam keadaan terbuka.
+   - Password disimpan di secret manager Render — bukan di repository.
+
+4c. **CORS & HTTPS**. Kalau dashboard monitoring dihosting terpisah, isi
+   origin-nya (koma, tanpa spasi, **tanpa `*`**):
+
+   ```
+   ALLOWED_ORIGINS=https://monitoring.sei.co.id
+   FORCE_HTTPS=true
+   ```
+
+4d. **Database (Fase 6 · 6·05) — `DATABASE_URL`**. Isi dari dashboard Render
    (Environment Variables), **bukan** dari repository — string koneksi adalah
    rahasia seperti API key.
 

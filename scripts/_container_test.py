@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -71,9 +72,20 @@ def main() -> int:
     s, b = call("/docs")
     check("GET /docs = 200 + Swagger", s == 200 and "swagger" in str(b).lower(), str(s))
 
-    # 3. dashboard (membuktikan templates/ ikut image)
-    s, b = call("/")
-    check("GET / = 200 + dashboard", s == 200 and "Engineer Console" in str(b), str(s))
+    # 3. dashboard (membuktikan templates/ ikut image) — butuh Basic Auth
+    dash_user = os.environ.get("DASHBOARD_USER", "")
+    dash_pass = os.environ.get("DASHBOARD_PASSWORD", "")
+    if dash_user and dash_pass:
+        import base64
+
+        raw = base64.b64encode(f"{dash_user}:{dash_pass}".encode("utf-8")).decode("ascii")
+        s, b = call("/", headers={"Authorization": "Basic " + raw})
+        check("GET / = 200 + dashboard", s == 200 and "Engineer Console" in str(b), str(s))
+        s, b = call("/")
+        check("GET / tanpa kredensial = 401", s == 401, str(s))
+    else:
+        s, b = call("/")
+        check("GET / = 401/503 (dashboard auth belum dikonfigurasi)", s in (401, 503), str(s))
 
     # 4. POST /forecast — request contoh sesuai kontrak
     s, b = call("/api/v1/forecast", headers=H, method="POST", body=sample_body())

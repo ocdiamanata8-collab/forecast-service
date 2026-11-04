@@ -17,6 +17,12 @@ PATTERNS = [
     (re.compile(r"X-API-Key:\s*(?!\$\{)(?!(?:\S*(?:GANTI|API_KEY|kunci|placeholder|CONTOH|contoh)))\S{20,}"), "API key panjang di teks"),
     (re.compile(r"(?:password|secret|token)\s*=\s*[\"'][^\"']{12,}[\"']", re.I), "kemungkinan kredensial hardcoded"),
 ]
+#: Penanda nilai yang jelas merupakan fixture/palsu — boleh ada di tests/,
+#: TETAPI tidak di app/ & scripts/ (di sana ini bocor nyata).
+PLACEHOLDER_MARKERS = (
+    "test", "dummy", "fake", "demo", "contoh", "ganti",
+    "change_me", "changeme", "placeholder", "example",
+)
 SENSITIVE_NAMES = {".env", ".pem", ".key", ".p12", ".pfx", "id_rsa", "id_ed25519"}
 
 
@@ -58,6 +64,13 @@ def main() -> int:
                 line = text.splitlines()[line_no - 1].strip()
                 if "<GANTI" in line or "<API_KEY>" in line:
                     continue
+                # Fixture di tests/ boleh selama jelas ditandai palsu.
+                if "kemungkinan kredensial hardcoded" in label:
+                    in_tests = "/tests/" in str(p).replace("\\", "/")
+                    low = line.lower()
+                    marked = any(m in low for m in PLACEHOLDER_MARKERS)
+                    if in_tests and marked:
+                        continue
                 issues.append(f"{p.relative_to(ROOT)}:{line_no} [{label}]")
                 print(f"  {p.relative_to(ROOT)}:{line_no}  {label}")
                 hit_any = True

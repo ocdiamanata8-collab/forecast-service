@@ -8,6 +8,7 @@ logika domain. Mengganti backend autentikasi nanti cukup mengganti fungsi
 
 from __future__ import annotations
 
+import os
 import re
 import secrets
 import time
@@ -18,7 +19,7 @@ from typing import Callable
 
 from fastapi import Depends, Request, Response
 from fastapi.responses import JSONResponse
-from fastapi.security import APIKeyHeader
+from fastapi.security import APIKeyHeader, HTTPBasic, HTTPBasicCredentials
 
 #: Skema security OpenAPI — inilah yang membuat tombol "Authorize" muncul di
 #: /docs. Tanpa ini, engineer TIDAK BISA menguji endpoint yang butuh key
@@ -250,6 +251,10 @@ class RateLimiter:
         hits.append(current)
         self._hits[key] = hits
         return True, self.limit - len(hits), 0
+
+    def reset(self, key: str) -> None:
+        """Hapus hit counter untuk satu key (mis. setelah login berhasil)."""
+        self._hits.pop(key, None)
 
 
 _REGISTRY = ApiKeyRegistry()

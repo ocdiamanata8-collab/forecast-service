@@ -41,6 +41,14 @@ jawabannya **bukan** menambah panel di sini, melainkan menunjuk platform
 monitoring utama. Itulah batas yang mencegah dua tampilan tumbuh berbeda
 untuk pengguna yang sama.
 
+## Akses ke halaman ini
+
+Halaman ini memuat data internal dan punya tombol menjalankan job — jadi
+ia **dilindungi HTTP Basic** (`DASHBOARD_USER`/`DASHBOARD_PASSWORD`),
+terpisah dari `X-API-Key` (§1.1) yang tetap dipakai panggilan API dari JS.
+Dua lapisan berdampingan; keduanya wajib. Basic Auth hanya aman di atas
+HTTPS (`FORCE_HTTPS=true`) dan akan diganti SSO platform.
+
 ---
 
 ## Keterbatasan yang diakui (jangan disembunyikan)

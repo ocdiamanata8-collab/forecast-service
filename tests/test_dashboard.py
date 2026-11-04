@@ -13,6 +13,7 @@ B. Halaman TIDAK menyembunyikan logika/data di dirinya (kalau ya, ia tidak
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import sys
@@ -30,6 +31,14 @@ from app.main import create_app  # noqa: E402
 
 FAILURES: list[str] = []
 
+#: Kredensial dashboard engineer (HTTP Basic) — halaman GET / kini dilindungi.
+DASH_USER = os.environ.get("DASHBOARD_USER", "engineer")
+DASH_PASS = os.environ.get("DASHBOARD_PASSWORD", "test-dashboard-password-0123456789")
+DASH_AUTH = {
+    "Authorization": "Basic "
+    + base64.b64encode(f"{DASH_USER}:{DASH_PASS}".encode("utf-8")).decode("ascii")
+}
+
 
 def check(condition: bool, label: str) -> None:
     print(f"  {'PASS' if condition else 'FAIL'}  {label}")
@@ -42,16 +51,42 @@ def check(condition: bool, label: str) -> None:
 # ---------------------------------------------------------------------------
 def _html() -> str:
     with TestClient(create_app()) as c:
-        return c.get("/").text
+        return c.get("/", headers=DASH_AUTH).text
 
 
-def test_root_serves_html_without_api_key():
-    """/ = halaman dashboard, terbuka tanpa key (engineer membuka dari browser)."""
+def test_root_serves_html_with_dashboard_auth_not_api_key():
+    """GET / butuh kredensial DASHBOARD (Basic), BUKAN X-API-Key.
+
+    Halaman ini memuat data internal + tombol jalankan job — jadi ia punya
+    lapisan auth sendiri. API key tetap dibutuhkan oleh panggilan API dari
+    JS, tapi TIDAK untuk memuat halaman.
+    """
     with TestClient(create_app()) as c:
-        r = c.get("/")
+        r = c.get("/", headers=DASH_AUTH)
         assert r.status_code == 200
         assert r.headers["content-type"].startswith("text/html")
-        assert r.status_code != 401, "halaman engineer tidak butuh API key"
+
+
+def test_root_without_credentials_is_challenged():
+    """Tanpa kredensial → 401 + WWW-Authenticate (dialog login browser)."""
+    with TestClient(create_app()) as c:
+        r = c.get("/")
+        assert r.status_code == 401, r.status_code
+        assert "basic" in r.headers.get("www-authenticate", "").lower()
+
+
+def test_root_with_wrong_credentials_is_challenged():
+    """Kredensial salah → 401 (pesan sama, tak ada oracle 'user ada')."""
+    import base64 as _b64
+
+    bad = {
+        "Authorization": "Basic "
+        + _b64.b64encode(f"{DASH_USER}:salah-sekali".encode("utf-8")).decode("ascii")
+    }
+    with TestClient(create_app()) as c:
+        r = c.get("/", headers=bad)
+        assert r.status_code == 401, r.status_code
+        assert r.json()["error"]["code"] == "E_UNAUTHORIZED"
 
 
 def test_role_document_exists_and_states_four_functions():
@@ -184,7 +219,7 @@ def test_dashboard_chart_has_legend_and_crosshair():
 def test_dashboard_is_api_consumer_calls_documented_endpoints():
     """JS harus memanggil endpoint kontrak — inilah yang menguji API."""
     with TestClient(create_app()) as c:
-        html = c.get("/").text
+        html = c.get("/", headers=DASH_AUTH).text
     for endpoint in (
         "/api/v1/forecast/latest",   # diminta instruksi
         "/api/v1/health",
@@ -200,7 +235,7 @@ def test_dashboard_is_api_consumer_calls_documented_endpoints():
 def test_dashboard_carries_context_field_audit():
     """Audit JS harus memeriksa field konteks (site_id/generated_at/unit/model_version)."""
     with TestClient(create_app()) as c:
-        html = c.get("/").text
+        html = c.get("/", headers=DASH_AUTH).text
     m = re.search(r'CTX_FIELDS\s*=\s*\[([^\]]+)\]', html)
     assert m, "CTX_FIELDS tidak ditemukan — audit konteks hilang"
     for field in ("site_id", "generated_at", "unit", "model_version"):
@@ -212,7 +247,7 @@ def test_chart_labels_forecast_meta_and_hides_out_of_horizon():
     jendela horizon disembunyikan dari garis — permintaan integrasi monitoring.
     """
     with TestClient(create_app()) as c:
-        html = c.get("/").text
+        html = c.get("/", headers=DASH_AUTH).text
     # (a) elemen label meta ada dan diisi dari adapter (textContent).
     assert 'id="chartMeta"' in html, "elemen label meta grafik tidak ada"
     assert "dibuat" in html and "horizon" in html, \
@@ -235,7 +270,7 @@ def test_dashboard_does_not_embed_forecast_data():
     rusak, dan perubahan kontrak tidak ketahuan.
     """
     with TestClient(create_app()) as c:
-        html = c.get("/").text
+        html = c.get("/", headers=DASH_AUTH).text
     # Tidak ada payload forecast yang dibakar.
     assert '"forecast": [' not in html, "payload forecast dibakar ke HTML"
     assert not re.search(r'"forecast_value"\s*:\s*\d', html), \
@@ -279,7 +314,7 @@ def test_docs_and_redoc_available():
 def test_dashboard_links_to_docs():
     """Dashboard harus menautkan Swagger agar engineer mudah melompat ke sana."""
     with TestClient(create_app()) as c:
-        html = c.get("/").text
+        html = c.get("/", headers=DASH_AUTH).text
     assert 'href="/docs"' in html
     assert 'href="/redoc"' in html
     assert 'href="/openapi.json"' in html
@@ -288,7 +323,7 @@ def test_dashboard_links_to_docs():
 def test_dashboard_has_error_rendering_for_api_errors():
     """Halaman harus bisa menampilkan envelope error API (bukan stack trace)."""
     with TestClient(create_app()) as c:
-        html = c.get("/").text
+        html = c.get("/", headers=DASH_AUTH).text
     assert '"error"' in html or "error.code" in html or "e.code" in html, \
         "JS tidak membaca error.code dari envelope"
     # Tidak boleh ada upaya mem-parse stack trace.
@@ -305,7 +340,7 @@ def test_dashboard_shows_service_unavailable_not_stale_values():
     3. refreshSummary tak mereset kpiStatus → "GO" basi tertinggal.
     """
     with TestClient(create_app()) as c:
-        html = c.get("/").text
+        html = c.get("/", headers=DASH_AUTH).text
     # 1. api() non-melempar: fetch gagal → {status:0, envelope transport}.
     assert "catch (_)" in html and '"E_SERVICE_UNAVAILABLE"' in html, \
         "api() harus menangkap fetch gagal dan mengembalikan status 0"
@@ -332,7 +367,7 @@ def test_root_error_when_template_missing(tmp_path, monkeypatch):
     # Arahkan TEMPLATE_DIR ke folder kosong: index.html tidak ada.
     monkeypatch.setattr(main_mod, "TEMPLATE_DIR", tmp_path)
     with TestClient(create_app()) as c:
-        r = c.get("/")
+        r = c.get("/", headers=DASH_AUTH)
         assert r.status_code == 404, r.status_code
         payload = r.json()
         assert payload["error"]["code"] == "E_NOT_FOUND", payload
@@ -344,7 +379,7 @@ def test_dashboard_static_asset_no_side_effects():
     """GET / tidak membuat file / tidak memanggil engine (konsumen murni)."""
     with TestClient(create_app()) as c:
         before = {p.name for p in Path(".").iterdir()}
-        r = c.get("/")
+        r = c.get("/", headers=DASH_AUTH)
         after = {p.name for p in Path(".").iterdir()}
     assert r.status_code == 200
     assert before == after, "GET / membuat/menghapus file"
@@ -511,9 +546,9 @@ def test_copy_endpoints_do_not_expose_api_key():
 # Mode script
 # ---------------------------------------------------------------------------
 def main() -> int:
-    print("\n[1] HALAMAN TERLAYANI TANPA API KEY")
+    print("\n[1] HALAMAN TERLAYANI DENGAN AUTENTIKASI DASHBOARD")
     with TestClient(create_app()) as c:
-        r = c.get("/")
+        r = c.get("/", headers=DASH_AUTH)
         check(r.status_code == 200, f"GET / -> {r.status_code}")
         check(r.headers["content-type"].startswith("text/html"),
               f"content-type={r.headers['content-type']}")
@@ -575,7 +610,7 @@ def main() -> int:
     print("\n[6] SAMPINGAN")
     with TestClient(create_app()) as c:
         before = {p.name for p in Path(".").iterdir()}
-        c.get("/")
+        c.get("/", headers=DASH_AUTH)
         after = {p.name for p in Path(".").iterdir()}
     check(before == after, "GET / tidak membuat file")
 
