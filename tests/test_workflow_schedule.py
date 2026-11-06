@@ -29,7 +29,7 @@ def test_forecast_workflow_has_hourly_forecast_and_backfill_daily_retention():
     assert "github.event.schedule == '37 * * * *'" in jobs["backfill"]["if"]
     assert "workflow_dispatch" in jobs["backfill"]["if"]
     assert "github.event.schedule == '23 3 * * *'" in jobs["retention"]["if"]
-    assert "secrets.DATABASE_URL != ''" in jobs["retention"]["if"]
+    assert "vars.FORECAST_RETENTION_DAYS != ''" in jobs["retention"]["if"]
 
 
 def test_forecast_action_is_http_only_and_uses_explicit_horizon():
@@ -61,20 +61,24 @@ def test_alert_workflow_is_independent_and_uses_secrets():
     assert "python -m app.monitoring" in text
     assert "secrets.DATABASE_URL" in text
     assert "secrets.FORECAST_ALERT_WEBHOOK_URL" in text
-    assert "secrets.DATABASE_URL != ''" in text or "secrets.DATABASE_URL == ''" in text
+    assert "steps.db.outputs.enabled" in text
     assert "app/monitoring.py" not in text  # workflow must not mask failure/replace CLI
 
 
 def test_scheduled_workflows_skip_gracefully_without_database_secret():
-    """Tanpa DATABASE_URL, job terjadwal tidak merah — notice setup, bukan exit 1 CLI."""
+    """Tanpa DATABASE_URL, job terjadwal tidak merah — notice setup, bukan exit 1 CLI.
+
+    GitHub melarang secrets.* di if: — pengecekan lewat env + GITHUB_OUTPUT.
+    """
     for name in ("forecast-monitor.yml", "db-backup.yml"):
         wf = _workflow(name)
         text = str(wf["jobs"])
-        assert "secrets.DATABASE_URL == ''" in text
-        assert "secrets.DATABASE_URL != ''" in text
+        assert 'if [ -z "${DATABASE_URL}" ]' in text
+        assert "GITHUB_OUTPUT" in text
+        assert "steps.db.outputs.enabled" in text
     jobs = _workflow("forecast-jobs.yml")["jobs"]
-    assert "secrets.FORECAST_API_KEY == ''" in str(jobs["forecast"])
-    assert "secrets.DATABASE_URL == ''" in str(jobs["backfill"])
+    assert 'if [ -z "${FORECAST_API_KEY}" ]' in str(jobs["forecast"])
+    assert 'if [ -z "${DATABASE_URL}" ]' in str(jobs["backfill"])
 
 
 def test_ci_workflow_runs_hygiene_and_pytest_without_secrets():

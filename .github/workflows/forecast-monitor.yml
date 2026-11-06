@@ -47,23 +47,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Lewati — DATABASE_URL belum di-set (PoC in-memory)
-        if: ${{ secrets.DATABASE_URL == '' }}
+      # GitHub tidak mengizinkan secrets.* di if: — cek lewat env + shell.
+      - name: Cek konfigurasi DATABASE_URL
+        id: db
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          echo "::notice title=Setup Actions::Secret DATABASE_URL kosong — monitor run-log dilewati (bukan kegagalan layanan). Isi DSN + migration 003 bila DB aktif (DEPLOY.md §4d / alert §7·04)."
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "::notice title=Setup Actions::Secret DATABASE_URL kosong — monitor run-log dilewati (bukan kegagalan layanan). Isi DSN + migration 003 bila DB aktif (DEPLOY.md §4d / alert §7·04)."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          fi
 
       - uses: actions/setup-python@v5
-        if: ${{ secrets.DATABASE_URL != '' }}
+        if: steps.db.outputs.enabled == 'true'
         with:
           python-version: "3.13"
           cache: pip
 
       - name: Pasang dependensi terkunci
-        if: ${{ secrets.DATABASE_URL != '' }}
+        if: steps.db.outputs.enabled == 'true'
         run: pip install -r requirements.txt
 
       - name: Periksa run-log & kirim alert bila perlu
-        if: ${{ secrets.DATABASE_URL != '' }}
+        if: steps.db.outputs.enabled == 'true'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SITE_IDS: ${{ vars.SITE_IDS || 'PLTS_KUPANG' }}

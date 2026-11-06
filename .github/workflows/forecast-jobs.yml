@@ -60,13 +60,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Lewati — FORECAST_API_KEY belum di-set (PoC)
-        if: ${{ secrets.FORECAST_API_KEY == '' }}
+      - name: Cek konfigurasi FORECAST_API_KEY
+        id: apikey
+        env:
+          FORECAST_API_KEY: ${{ secrets.FORECAST_API_KEY }}
         run: |
-          echo "::notice title=Setup Actions::Secret FORECAST_API_KEY kosong — regenerasi HTTP dilewati. Isi dari secret manager (format label:key bila perlu). Lihat DEPLOY.md §4."
+          if [ -z "${FORECAST_API_KEY}" ]; then
+            echo "::notice title=Setup Actions::Secret FORECAST_API_KEY kosong — regenerasi HTTP dilewati. Isi dari secret manager (format label:key bila perlu). Lihat DEPLOY.md §4."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          fi
       # HTTP-only: tanpa setup-python, tanpa pip, tanpa model.
       - name: Panggil job forecast (per site)
-        if: ${{ secrets.FORECAST_API_KEY != '' }}
+        if: steps.apikey.outputs.enabled == 'true'
         env:
           FORECAST_API_URL: ${{ vars.FORECAST_API_URL || 'https://ocdi.blitz.cloud' }}
           FORECAST_API_KEY: ${{ secrets.FORECAST_API_KEY }}
@@ -83,20 +90,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Lewati — DATABASE_URL belum di-set (PoC in-memory)
-        if: ${{ secrets.DATABASE_URL == '' }}
+      - name: Cek konfigurasi DATABASE_URL
+        id: db
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          echo "::notice title=Setup Actions::Secret DATABASE_URL kosong — backfill dilewati. Isi DSN PostgreSQL bila persistensi aktif (DEPLOY.md §4d)."
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "::notice title=Setup Actions::Secret DATABASE_URL kosong — backfill dilewati. Isi DSN PostgreSQL bila persistensi aktif (DEPLOY.md §4d)."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          fi
       - uses: actions/setup-python@v5
-        if: ${{ secrets.DATABASE_URL != '' }}
+        if: steps.db.outputs.enabled == 'true'
         with:
           python-version: "3.13"
           cache: pip
       - name: Pasang dependensi terkunci
-        if: ${{ secrets.DATABASE_URL != '' }}
+        if: steps.db.outputs.enabled == 'true'
         run: pip install -r requirements.txt
       - name: Sinkron aktual + isi baris yang sudah lewat
-        if: ${{ secrets.DATABASE_URL != '' }}
+        if: steps.db.outputs.enabled == 'true'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SITE_IDS: ${{ vars.SITE_IDS || 'PLTS_KUPANG' }}
@@ -110,18 +124,31 @@ jobs:
        (github.event_name == 'workflow_dispatch' &&
         (inputs.job == 'retention' || inputs.job == 'all'))) &&
       vars.FORECAST_RETENTION_DAYS != '' &&
-      vars.FORECAST_RETENTION_DAYS != '0' &&
-      secrets.DATABASE_URL != ''
+      vars.FORECAST_RETENTION_DAYS != '0'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Cek konfigurasi DATABASE_URL
+        id: db
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "${DATABASE_URL}" ]; then
+            echo "::notice title=Setup Actions::Secret DATABASE_URL kosong — retensi dilewati."
+            echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+          fi
       - uses: actions/setup-python@v5
+        if: steps.db.outputs.enabled == 'true'
         with:
           python-version: "3.13"
           cache: pip
       - name: Pasang dependensi terkunci
+        if: steps.db.outputs.enabled == 'true'
         run: pip install -r requirements.txt
       - name: Hapus batch melebihi retensi
+        if: steps.db.outputs.enabled == 'true'
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           FORECAST_RETENTION_DAYS: ${{ vars.FORECAST_RETENTION_DAYS }}
