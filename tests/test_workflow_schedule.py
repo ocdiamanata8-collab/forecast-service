@@ -67,7 +67,8 @@ def test_ci_workflow_runs_hygiene_and_pytest_without_secrets():
     job = wf["jobs"]["test"]
     text = str(job)
     assert "check_repo_hygiene.py" in text
-    assert "pytest" in text
+    assert "pytest tests/" in text
+    assert "pytest==" in text  # dev dep — tidak masuk requirements.txt
     assert "secrets." not in text
     assert wf["permissions"]["contents"] == "read"
 

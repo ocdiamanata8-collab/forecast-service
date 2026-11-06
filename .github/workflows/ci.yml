@@ -27,8 +27,8 @@ jobs:
           python-version: "3.13"
           cache: pip
 
-      - name: Pasang dependensi terkunci
-        run: pip install -r requirements.txt
+      - name: Pasang dependensi terkunci + pytest (dev, tidak di requirements.txt)
+        run: pip install -r requirements.txt pytest==9.1.1
 
       - name: Audit kebersihan repo
         run: python scripts/check_repo_hygiene.py
