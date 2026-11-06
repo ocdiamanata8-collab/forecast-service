@@ -212,6 +212,67 @@ def test_example_keys_not_in_code():
     check(True, "tidak ada key contoh di kode / .env.example")
 
 
+#: Literal key demo yang dulu bocor ke file konfigurasi ter-commit.
+#: Nilai ini DIJAGA sebagai penanda — kalau muncul lagi di file ter-commit
+#: (di luar tests/), berarti ada Literal API key yang bocor lagi.
+_LEAKED_KEY_LITERAL = "dev-key-change-me"
+
+
+def test_no_api_key_literal_in_tracked_files():
+    """Tidak boleh ada literal API key di file yang IKUT ter-commit.
+
+    Kontrak §1.1: key hanya dari environment variable / secret manager.
+    File konfigurasi ter-commit (launch.json, .env.example, workflow YAML)
+    adalah tempat paling rawan — dipakai berulang, lalu ikut ter-push.
+
+    Pengecualian:
+    - ``tests/`` — fixture; polanya dipakai sebagai penanda.
+    - ``scripts/check_repo_hygiene.py`` — memuat polanya sendiri (detector).
+    """
+    import subprocess
+
+    tracked = subprocess.run(
+        ["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True
+    ).stdout.split()
+    offenders: list[str] = []
+    for rel in tracked:
+        path = ROOT / rel
+        if not path.is_file():
+            continue
+        posix = rel.replace("\\", "/")
+        if posix.startswith("tests/") or rel == "scripts/check_repo_hygiene.py":
+            continue
+        if path.suffix not in {".py", ".html", ".md", ".json", ".yml", ".yaml",
+                               ".toml", ".cfg", ".ini", ".txt", ".env"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if _LEAKED_KEY_LITERAL in text:
+            offenders.append(rel)
+    check(not offenders,
+          f"tidak ada literal API key di file ter-commit (bocor: {offenders})")
+
+
+def test_launch_json_carries_no_api_key():
+    """``.claude/launch.json`` tidak boleh membawa API key.
+
+    Konfigurasi ini dipakai developer untuk menjalankan service lokal; key
+    di dalamnya akan ikut ter-commit dan bocor ke riwayat git. Key untuk
+    lokal dikirim lewat environment shell, bukan ditulis di file.
+    """
+    launch = ROOT / ".claude" / "launch.json"
+    if not launch.exists():
+        check(True, ".claude/launch.json tidak ada — tidak ada yang perlu diperiksa")
+        return
+    text = launch.read_text(encoding="utf-8", errors="ignore")
+    check("API_KEYS" not in text,
+          ".claude/launch.json tidak memuat API_KEYS")
+    check("DASHBOARD_PASSWORD" not in text,
+          ".claude/launch.json tidak memuat DASHBOARD_PASSWORD")
+
+
 def test_model_version_env_ignored():
     """MODEL_VERSION env TIDAK berpengaruh — model/VERSION satu-satunya sumber."""
     old = os.environ.get("MODEL_VERSION")
@@ -344,6 +405,10 @@ def main() -> int:
     test_empty_api_keys_rejects_all()
     print("\n[5] Kunci contoh tidak bocor ke kode/.env.example")
     test_example_keys_not_in_code()
+    print("\n[5b] Tidak ada literal API key di file ter-commit")
+    test_no_api_key_literal_in_tracked_files()
+    print("\n[5c] .claude/launch.json tidak membawa API key")
+    test_launch_json_carries_no_api_key()
     print("\n[6] MODEL_VERSION env diabaikan")
     test_model_version_env_ignored()
     print("\n[7] TZ env diabaikan; zona = Asia/Makassar")

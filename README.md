@@ -92,6 +92,20 @@ endpoint tidak berubah.
 - Docs: <http://localhost:8000/docs>
 - Health (tanpa key): <http://localhost:8000/api/v1/health>
 
+Semua credential (API key, password dashboard, DSN database) **hanya** lewat
+environment variable — tidak ada satu pun yang tertulis di file konfigurasi
+repo. Untuk run lokal, set di shell lebih dulu:
+
+    # PowerShell
+    $env:API_KEYS = "engineer:<token_urlsafe_43huruf>"
+    uvicorn app.main:app --reload --port 8000
+
+Konfigurasi `.claude/launch.json` (untuk preview lokal) **sengaja tidak**
+memuat `API_KEYS` — file itu ikut ter-commit, jadi key di dalamnya akan bocor
+ke riwayat git. Setel key di environment tempat prosesnya dijalankan
+(`uvicorn` mewarisi environment shell; preview mewarisi environment dari
+proses yang menjalankannya).
+
 ### API key (satu konsumen, satu key)
 
 Endpoint kecuali `/health` butuh header `X-API-Key`. **Tidak ada key demo

@@ -15,7 +15,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("SCHEDULER_ENABLED", "false")
-os.environ.setdefault("API_KEYS", "dev-key-change-me-0123456789")
 
 import psycopg  # noqa: E402
 
