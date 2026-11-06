@@ -30,24 +30,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Lewati — DATABASE_URL belum di-set
+        if: ${{ secrets.DATABASE_URL == '' }}
+        run: |
+          echo "::notice title=Setup Actions::Secret DATABASE_URL kosong — backup DB dilewati. Isi DSN PostgreSQL untuk backup harian (DEPLOY.md §4d / db-backup.yml)."
+
       # pg_dump versi MAJOR harus sama dengan server — runner memakai
       # default apt (postgresql-client) yang modern untuk server 13+.
       - name: Pasang klien PostgreSQL
+        if: ${{ secrets.DATABASE_URL != '' }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends postgresql-client
 
       - name: Backup
+        if: ${{ secrets.DATABASE_URL != '' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: python3 scripts/backup_db.py --out backups
 
       - name: Ringkas (tanpa kredensial)
+        if: ${{ secrets.DATABASE_URL != '' }}
         run: ls -lh backups/
 
       # Retensi artifact = 30 hari (retensi file --keep-days TIDAK dipakai
       # di CI: workspace tiap run selalu baru, tidak ada file lama).
       - name: Unggah dump
+        if: ${{ secrets.DATABASE_URL != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: forecast-db-${{ github.run_id }}

@@ -47,15 +47,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Lewati — DATABASE_URL belum di-set (PoC in-memory)
+        if: ${{ secrets.DATABASE_URL == '' }}
+        run: |
+          echo "::notice title=Setup Actions::Secret DATABASE_URL kosong — monitor run-log dilewati (bukan kegagalan layanan). Isi DSN + migration 003 bila DB aktif (DEPLOY.md §4d / alert §7·04)."
+
       - uses: actions/setup-python@v5
+        if: ${{ secrets.DATABASE_URL != '' }}
         with:
           python-version: "3.13"
           cache: pip
 
       - name: Pasang dependensi terkunci
+        if: ${{ secrets.DATABASE_URL != '' }}
         run: pip install -r requirements.txt
 
       - name: Periksa run-log & kirim alert bila perlu
+        if: ${{ secrets.DATABASE_URL != '' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SITE_IDS: ${{ vars.SITE_IDS || 'PLTS_KUPANG' }}

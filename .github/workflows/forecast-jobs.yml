@@ -29,7 +29,18 @@ on:
     - cron: "17 * * * *"   # regenerasi forecast per jam
     - cron: "37 * * * *"   # backfill aktual per jam
     - cron: "23 3 * * *"   # retensi harian 03:23 UTC = 11:23 WITA
-  workflow_dispatch: {}     # uji manual / pemicu pasca-deploy
+  workflow_dispatch:
+    inputs:
+      job:
+        description: Job manual (cron terjadwal mengabaikan input ini)
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - forecast
+          - backfill
+          - retention
 
 permissions:
   contents: read            # tanpa tulis apa pun — job hanya memanggil API/CLI
@@ -42,12 +53,20 @@ concurrency:
 
 jobs:
   forecast:
-    if: github.event.schedule == '17 * * * *'
+    if: >-
+      github.event.schedule == '17 * * * *' ||
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.job == 'forecast' || inputs.job == 'all'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Lewati — FORECAST_API_KEY belum di-set (PoC)
+        if: ${{ secrets.FORECAST_API_KEY == '' }}
+        run: |
+          echo "::notice title=Setup Actions::Secret FORECAST_API_KEY kosong — regenerasi HTTP dilewati. Isi dari secret manager (format label:key bila perlu). Lihat DEPLOY.md §4."
       # HTTP-only: tanpa setup-python, tanpa pip, tanpa model.
       - name: Panggil job forecast (per site)
+        if: ${{ secrets.FORECAST_API_KEY != '' }}
         env:
           FORECAST_API_URL: ${{ vars.FORECAST_API_URL || 'https://ocdi.blitz.cloud' }}
           FORECAST_API_KEY: ${{ secrets.FORECAST_API_KEY }}
@@ -57,17 +76,27 @@ jobs:
         run: bash scripts/run_forecast.sh
 
   backfill:
-    if: github.event.schedule == '37 * * * *'
+    if: >-
+      github.event.schedule == '37 * * * *' ||
+      (github.event_name == 'workflow_dispatch' &&
+       (inputs.job == 'backfill' || inputs.job == 'all'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Lewati — DATABASE_URL belum di-set (PoC in-memory)
+        if: ${{ secrets.DATABASE_URL == '' }}
+        run: |
+          echo "::notice title=Setup Actions::Secret DATABASE_URL kosong — backfill dilewati. Isi DSN PostgreSQL bila persistensi aktif (DEPLOY.md §4d)."
       - uses: actions/setup-python@v5
+        if: ${{ secrets.DATABASE_URL != '' }}
         with:
           python-version: "3.13"
           cache: pip
       - name: Pasang dependensi terkunci
+        if: ${{ secrets.DATABASE_URL != '' }}
         run: pip install -r requirements.txt
       - name: Sinkron aktual + isi baris yang sudah lewat
+        if: ${{ secrets.DATABASE_URL != '' }}
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           SITE_IDS: ${{ vars.SITE_IDS || 'PLTS_KUPANG' }}
@@ -76,7 +105,13 @@ jobs:
   retention:
     # Default mati: FORECAST_RETENTION_DAYS kosong/0 → job dilewati sama
     # sekali (menghapus tidak boleh terjadi diam-diam, lihat app/retention.py).
-    if: github.event.schedule == '23 3 * * *' && vars.FORECAST_RETENTION_DAYS != '' && vars.FORECAST_RETENTION_DAYS != '0'
+    if: >-
+      (github.event.schedule == '23 3 * * *' ||
+       (github.event_name == 'workflow_dispatch' &&
+        (inputs.job == 'retention' || inputs.job == 'all'))) &&
+      vars.FORECAST_RETENTION_DAYS != '' &&
+      vars.FORECAST_RETENTION_DAYS != '0' &&
+      secrets.DATABASE_URL != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
