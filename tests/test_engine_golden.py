@@ -21,6 +21,11 @@ Cara menyegarkan golden (HANYA bila perubahan perilaku disengaja):
     python tests/fixtures/make_fixtures.py
     git diff tests/fixtures/forecast_golden.csv     # periksa dulu!
 
+Di laptop Windows, ``forecast_golden.csv`` kanonik di-generate di runner
+Linux (sama dengan Render/CI): Actions → **Regenerate golden (Linux)**,
+unduh artifact, commit. Pytest ``test_engine_matches_golden`` dilewati
+di ``win32``; alarm regresi penuh jalan di CI Linux.
+
 Jangan menyegarkan otomatis saat test gagal — itu mematikan alarmnya.
 """
 
@@ -30,6 +35,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -45,8 +51,7 @@ GOLDEN_CSV = FIXTURES / "forecast_golden.csv"
 #: Horizon yang dikunci test ini. Ubah = harus segarkan fixture juga.
 HORIZON = 24
 
-#: Toleransi numerik: mengizinkan drift < 1e-6 relatif (noise float lingkungan),
-#: tetapi menangkap setiap perubahan perilaku yang bermakna.
+#: Toleransi numerik di runner Linux (CI/Render): drift < 1e-6 relatif.
 RTOL = 1e-6
 
 #: Kolom yang dibandingkan terhadap golden.
@@ -123,6 +128,13 @@ def load_golden() -> pd.DataFrame:
     )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "forecast_golden.csv kanonik Linux (CI/Render); "
+        "regenerasi: workflow Regenerate golden (Linux)"
+    ),
+)
 def test_engine_matches_golden() -> None:
     """Jantung test ini: output engine == hasil emas.
 
