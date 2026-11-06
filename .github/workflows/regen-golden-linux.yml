@@ -1,0 +1,37 @@
+# Regenerasi forecast_golden.csv di runner Linux (sama dengan Render/CI).
+# Jalankan manual: Actions → Regenerate golden (Linux) → Run workflow
+# Unduh artifact `forecast-golden-csv` lalu commit ke repo.
+name: Regenerate golden (Linux)
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  regen:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Pasang dependensi terkunci
+        run: pip install -r requirements.txt
+
+      - name: Tulis ulang fixture golden dari engine
+        run: python tests/fixtures/make_fixtures.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forecast-golden-csv
+          path: tests/fixtures/forecast_golden.csv
+
+      - name: Ringkas perbedaan vs commit (jika ada)
+        run: |
+          git diff --stat tests/fixtures/forecast_golden.csv || true
+          git diff tests/fixtures/forecast_golden.csv | head -40 || true
