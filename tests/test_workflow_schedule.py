@@ -59,6 +59,19 @@ def test_alert_workflow_is_independent_and_uses_secrets():
     assert "app/monitoring.py" not in text  # workflow must not mask failure/replace CLI
 
 
+def test_ci_workflow_runs_hygiene_and_pytest_without_secrets():
+    wf = _workflow("ci.yml")
+    on = wf.get("on", wf.get(True, {}))
+    assert "push" in on
+    assert "pull_request" in on
+    job = wf["jobs"]["test"]
+    text = str(job)
+    assert "check_repo_hygiene.py" in text
+    assert "pytest" in text
+    assert "secrets." not in text
+    assert wf["permissions"]["contents"] == "read"
+
+
 def test_no_web_process_interval_loops_remain():
     root = ROOT / "app"
     source = "\n".join(p.read_text(encoding="utf-8") for p in root.rglob("*.py"))
