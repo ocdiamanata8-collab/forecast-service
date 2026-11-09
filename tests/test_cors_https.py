@@ -117,3 +117,68 @@ def test_force_https_redirects_http_request():
         else:
             os.environ["ALLOWED_ORIGINS"] = prev_origins
 
+
+def test_proxy_forwarded_https_does_not_redirect_loop():
+    """Regresi: proxy TLS (Blitz/Render) + ``X-Forwarded-Proto: https``.
+
+    Kalau ProxyHeaders berada DI DALAM HTTPSRedirect, scope scheme masih
+    ``http`` saat redirect dievaluasi → 307 ke URL https yang sama → browser
+    mengulang selamanya (ERR_TOO_MANY_REDIRECTS).
+    """
+    prev_force = os.environ.get("FORCE_HTTPS")
+    prev_origins = os.environ.get("ALLOWED_ORIGINS")
+    os.environ["FORCE_HTTPS"] = "true"
+    os.environ.pop("ALLOWED_ORIGINS", None)
+    try:
+        with TestClient(create_app()) as client:
+            response = client.get(
+                "/api/v1/health",
+                headers={"X-Forwarded-Proto": "https"},
+                follow_redirects=False,
+            )
+            assert response.status_code == 200
+            assert "location" not in response.headers
+
+            # Setelah ikut redirect pun harus mendarat, bukan redirect lagi.
+            followed = client.get(
+                "/api/v1/health",
+                headers={"X-Forwarded-Proto": "https"},
+                follow_redirects=True,
+            )
+            assert followed.status_code == 200
+    finally:
+        if prev_force is None:
+            os.environ.pop("FORCE_HTTPS", None)
+        else:
+            os.environ["FORCE_HTTPS"] = prev_force
+        if prev_origins is None:
+            os.environ.pop("ALLOWED_ORIGINS", None)
+        else:
+            os.environ["ALLOWED_ORIGINS"] = prev_origins
+
+
+def test_proxy_forwarded_http_still_redirects_once():
+    """Proxy yang mengirim ``X-Forwarded-Proto: http`` → redirect ke https sekali."""
+    prev_force = os.environ.get("FORCE_HTTPS")
+    prev_origins = os.environ.get("ALLOWED_ORIGINS")
+    os.environ["FORCE_HTTPS"] = "true"
+    os.environ.pop("ALLOWED_ORIGINS", None)
+    try:
+        with TestClient(create_app()) as client:
+            response = client.get(
+                "/api/v1/health",
+                headers={"X-Forwarded-Proto": "http"},
+                follow_redirects=False,
+            )
+            assert response.status_code in {301, 307, 308}
+            assert response.headers.get("location", "").startswith("https://")
+    finally:
+        if prev_force is None:
+            os.environ.pop("FORCE_HTTPS", None)
+        else:
+            os.environ["FORCE_HTTPS"] = prev_force
+        if prev_origins is None:
+            os.environ.pop("ALLOWED_ORIGINS", None)
+        else:
+            os.environ["ALLOWED_ORIGINS"] = prev_origins
+

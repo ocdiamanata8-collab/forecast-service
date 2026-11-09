@@ -460,6 +460,7 @@ def assert_known_site(request: Request, site_id: str) -> None:
     Tanpa pembagian ini, platform monitoring tidak bisa membedakan
     "salah konfigurasi" dari "belum ada data".
     """
+    request.state.site_id = site_id
     known = getattr(request.app.state, "known_sites", None)
     if known is not None and site_id not in known:
         raise FastApiError(

@@ -117,8 +117,22 @@ def configure_http_middleware(app: FastAPI) -> None:
 
     if force_https_enabled():
         trusted = trusted_proxy_hosts_from_env()
-        app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=trusted)
+        # Urutan WAJIB: ProxyHeaders di LUAR HTTPSRedirect.
+        #
+        # Starlette ``add_middleware`` menyisipkan di posisi paling luar
+        # (index 0 = middleware paling depan), jadi middleware yang
+        # ditambahkan TERAKHIR menjadi yang TERLUAR. ProxyHeaders harus
+        # paling luar karena ia yang mengubah ``scope["scheme"]`` dari
+        # ``X-Forwarded-Proto`` milik reverse proxy (Render, Blitz, nginx).
+        #
+        # Jika urutannya terbalik (redirect di luar proxy-headers),
+        # request dari proxy TLS selalu terlihat ``http`` — karena header
+        # forwarded baru dibaca SETELAH middleware redirect selesai —
+        # sehingga setiap request dialihkan 307 ke URL https yang sama.
+        # Browser/curl mengikuti redirect itu dan mengulang selamanya:
+        # ERR_TOO_MANY_REDIRECTS / "redirected you too many times".
         app.add_middleware(HTTPSRedirectMiddleware)
+        app.add_middleware(ProxyHeadersMiddleware, trusted_hosts=trusted)
 
 
 def log_http_policy_at_startup() -> None:

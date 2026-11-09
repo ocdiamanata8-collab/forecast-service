@@ -87,6 +87,22 @@ tanpa menguji ulang (termasuk `tests/test_engine_golden.py` dan
    FORCE_HTTPS=true
    ```
 
+   **Reverse proxy (Render, Blitz, nginx) — `X-Forwarded-Proto` wajib
+   diteruskan.** Service memercayai header itu untuk membedakan request
+   HTTP vs HTTPS yang sebenarnya. Bila proxy tidak mengirimnya, service
+   menganggap request masih HTTP dan mengarahkan browser ke URL HTTPS
+   yang sama → **loop redirect** (`ERR_TOO_MANY_REDIRECTS` / "redirected
+   you too many times"). Gejalanya: browser tidak pernah sampai ke
+   dashboard, dan `curl -I https://host/` menunjukkan rantai 307→307→307.
+
+   Periksa: `curl -sI https://host/ | grep -i location` → kalau hasilnya
+   `https://host/` (menunjuk ke dirinya sendiri), proxy belum meneruskan
+   `X-Forwarded-Proto`, atau `FORCE_HTTPS` aktif tanpa proxy yang benar.
+
+   **`TRUSTED_PROXY_HOSTS`** (default `*`) membatasi proxy yang dipercaya
+   mengirim header forwarded. Di produksi, isi dengan IP/CIDR proxy Anda
+   agar hanya proxy internal yang dipercaya.
+
 4d. **Database (Fase 6 · 6·05) — `DATABASE_URL`**. Isi dari dashboard Render
    (Environment Variables), **bukan** dari repository — string koneksi adalah
    rahasia seperti API key.
@@ -156,6 +172,33 @@ tanpa menguji ulang (termasuk `tests/test_engine_golden.py` dan
    `FORECAST_RETENTION_DAYS` (kosong/0 = retensi mati),
    `FORECAST_ALERT_FAILURE_STREAK` / `_STALE_HOURS` / `_REPEAT_HOURS`
    (default 3 / 3 / 6).
+
+   **Secret kosong (PoC in-memory) — bukan kegagalan merah**
+
+   Bila `DATABASE_URL` dan/atau `FORECAST_API_KEY` **belum** diisi di Actions,
+   workflow terjadwal **sengaja tidak** memanggil CLI yang exit 1. Sebagai
+   gantinya job menulis **notice** di log (judul *Setup Actions*) dan run
+   berakhir **hijau** — tab Actions tidak merah hanya karena PoC belum pakai
+   PostgreSQL atau cron HTTP belum dikonfigurasi.
+
+   | Workflow | Secret yang dicek | Bila kosong |
+   |---|---|---|
+   | `forecast-jobs` → forecast | `FORECAST_API_KEY` | Lewati `run_forecast.sh` |
+   | `forecast-jobs` → backfill | `DATABASE_URL` | Lewati `python -m app.backfill` |
+   | `forecast-jobs` → retention | `DATABASE_URL` (+ var retensi) | Job retention tidak jalan bila retensi mati; bila retensi aktif tapi DSN kosong, notice + skip |
+   | `forecast-monitor` | `DATABASE_URL` | Lewati `python -m app.monitoring` |
+   | `db-backup` | `DATABASE_URL` | Lewati backup + artifact |
+
+   Setelah secret diisi, job yang sama **benar-benar jalan** pada jadwal
+   berikutnya. **Pengecualian:** `forecast-monitor` tetap boleh **merah**
+   bila run-log menunjukkan kondisi alert (3 gagal beruntun / stale 3 jam) atau
+   DB/migrasi `003` belum siap — itu visibilitas 7·04, bukan “secret kosong”.
+
+   Uji manual tanpa menunggu cron: **Actions** → pilih workflow → **Run
+   workflow**. Untuk `Scheduled forecast jobs`, pilih input **job** (`all`,
+   `forecast`, `backfill`, atau `retention`). Verifikasi repo (hygiene +
+   pytest) terpisah di workflow **CI** pada setiap push ke `main` — **tanpa**
+   secret Actions.
 
    - Tanpa `FORECAST_ALERT_WEBHOOK_URL` monitor tetap jalan: kondisi buruk
      membuat job exit nonzero → **notifikasi email GitHub Actions** ke watcher

@@ -56,6 +56,7 @@ from app.security import (
     parse_api_keys_full,
     request_id_of,
 )
+from app.access_log import configure_access_logging, log_http_access
 from app.http_policy import configure_http_middleware, log_http_policy_at_startup
 from app.storage import ForecastStore, InMemoryForecastStore
 from app.version import VersionFileError, assert_sane
@@ -146,6 +147,7 @@ async def lifespan(app: FastAPI):
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    configure_access_logging()
 
     # ------------------------------------------------------------------
     # API key per konsumen (§1.1) — format env: `API_KEYS=label:key,...`
@@ -374,26 +376,17 @@ def create_app() -> FastAPI:
     async def attach_request_id(request: Request, call_next):
         rid = request.headers.get("X-Request-Id") or str(uuid.uuid4())
         request.state.request_id = rid
+        started = time.perf_counter()
         response = await call_next(request)
         response.headers["X-Request-Id"] = rid
-        # ------------------------------------------------------------------
-        # Log pemakaian per konsumen (§1.1) — SATU baris per request ber-key.
-        # Format key=value siap diparse platform monitoring/log pipeline.
-        # label konsumen dari API_KEYS=label:key; nilai KEY TIDAK PERNAH ikut
-        # dicatat (kebocoran key ke log = pelanggaran kebersihan rahasia).
-        # health/docs tanpa key tercatat consumer=- (probe uptime bukan konsumen).
-        # ------------------------------------------------------------------
-        consumer = getattr(request.state, "api_key_label", "-")
-        usage_log.info(
-            "usage consumer=%s method=%s path=%s status=%s request_id=%s "
-            "rl_limit=%s rl_remaining=%s",
-            consumer,
-            request.method,
-            request.url.path,
-            response.status_code,
-            rid,
-            response.headers.get("X-RateLimit-Limit", "-"),
-            response.headers.get("X-RateLimit-Remaining", "-"),
+        dur_ms = max(0, int((time.perf_counter() - started) * 1000))
+        log_http_access(
+            request,
+            status=response.status_code,
+            dur_ms=dur_ms,
+            request_id=rid,
+            rl_limit=response.headers.get("X-RateLimit-Limit", "-"),
+            rl_remaining=response.headers.get("X-RateLimit-Remaining", "-"),
         )
         return response
 

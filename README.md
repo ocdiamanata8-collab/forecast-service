@@ -115,8 +115,14 @@ dalam format **per konsumen** `label:key` (kontrak §1.1):
     API_KEYS=monitoring:<kunci>,ci:<kunci>
 
 Satu konsumen (platform monitoring, CI, engineer) memegang key sendiri:
-server mencatat pemakaian per konsumen di log (`consumer=monitoring ...` —
-nilai key tidak pernah dicatat) dan tiap key punya rate-limit 60/mnt
+server mencatat **satu baris log terstruktur** per request (format key=value,
+ zona WITA), misalnya:
+
+    ts=2026-10-01T13:04:11+08:00 level=info consumer=monitoring site=PLTS_KUPANG path=/api/v1/forecast/latest status=200 dur_ms=41 rid=8f2c rl_limit=60 rl_remaining=58
+
+Field `consumer=` berasal dari label §1.1; **nilai key tidak pernah** masuk log.
+Isi body request juga tidak dicatat — cukup untuk menelusuri integrasi saat
+platform monitoring melaporkan data aneh. Tiap key punya rate-limit 60/mnt
 sendiri, sehingga pencabutan satu konsumen tidak memutus konsumen lain.
 Tanpa `API_KEYS`, endpoint ber-key membalas `401 E_UNAUTHORIZED` (by design).
 
